@@ -26,7 +26,7 @@ BATCH_DELAY = 2.0
 NUM_CHUNKS = 8
 CAPITAL = 10.0
 SL_PCT = 1.5 / 100
-TP_PCT = 0.7 / 100  # Updated from 0.5% to 0.7%
+TP_PCT = 0.7 / 100
 TP_SL_CHECK_INTERVAL = 30
 TRADE_FILE = 'open_trades.json'
 CLOSED_TRADE_FILE = 'closed_trades.json'
@@ -43,7 +43,9 @@ BODY_SIZE_THRESHOLD = 0.1
 SUMMARY_INTERVAL = 3600
 
 # === PROXY CONFIGURATION ===
-PROXY_LIST = []
+PROXY_LIST = [
+  
+]
 
 def get_proxy_config(proxy):
     return {
@@ -286,7 +288,7 @@ def detect_falling_three(candles):
     )
     small_green_0 = (
         is_bullish(c0) and body_pct(c0) <= MAX_SMALL_BODY_PCT and
-        c0[4] < c2[2] - (c2[2] - c3[3]) * 0.3 and c0[5] < c2[5]
+        c0[4] < c2[2] - (c2[2] - c2[3]) * 0.3 and c0[5] < c2[5]
     )
     volume_decreasing = c1[5] > c0[5]
     return big_red and small_green_1 and small_green_0 and volume_decreasing
