@@ -26,18 +26,32 @@ BATCH_DELAY = 2.0
 NUM_CHUNKS = 8
 CAPITAL = 10.0
 SL_PCT = 1.5 / 100
-TP_PCT = 0.7 / 100
+TP_PCT = 0.5 / 100
 TP_SL_CHECK_INTERVAL = 30
 TRADE_FILE = 'open_trades.json'
 CLOSED_TRADE_FILE = 'closed_trades.json'
 MAX_OPEN_TRADES = 5
 CATEGORY_PRIORITY = {
     'two_green': 3,
-    'one_green_one_caution': 2,
+    'one_green': 2,
     'two_cautions': 1
 }
+RSI_PERIOD = 14
+RSI_OVERBOUGHT = 80
+RSI_OVERSOLD = 30
 BODY_SIZE_THRESHOLD = 0.1
 SUMMARY_INTERVAL = 3600
+
+# === PROXY CONFIGURATION ===
+PROXY_LIST = [
+  
+]
+
+def get_proxy_config(proxy):
+    return {
+        "http": f"http://{proxy['username']}:{proxy['password']}@{proxy['host']}:{proxy['port']}",
+        "https": f"http://{proxy['username']}:{proxy['password']}@{proxy['host']}:{proxy['port']}"
+    }
 
 # === CONFIGURE LOGGING ===
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -99,7 +113,7 @@ def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {'chat_id': CHAT_ID, 'text': msg}
     try:
-        response = requests.post(url, data=data, timeout=5).json()
+        response = requests.post(url, data=data, timeout=5, proxies=proxies).json()
         print(f"Telegram sent: {msg}")
         return response.get('result', {}).get('message_id')
     except Exception as e:
@@ -110,7 +124,7 @@ def edit_telegram_message(message_id, new_text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
     try:
-        requests.post(url, data=data, timeout=5)
+        requests.post(url, data=data, timeout=5, proxies=proxies)
         print(f"Telegram updated: {new_text}")
     except Exception as e:
         print(f"Edit error: {e}")
@@ -120,6 +134,26 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 def initialize_exchange():
+    for proxy in PROXY_LIST:
+        try:
+            proxies = get_proxy_config(proxy)
+            logging.info(f"Trying proxy: {proxy['host']}:{proxy['port']}")
+            session = requests.Session()
+            retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+            session.mount('https://', HTTPAdapter(pool_maxsize=20, max_retries=retries))
+            exchange = ccxt.binance({
+                'options': {'defaultType': 'future'},
+                'proxies': proxies,
+                'enableRateLimit': True,
+                'session': session
+            })
+            exchange.load_markets()
+            logging.info(f"Successfully connected using proxy: {proxy['host']}:{proxy['port']}")
+            return exchange, proxies
+        except Exception as e:
+            logging.error(f"Failed to connect with proxy {proxy['host']}:{proxy['port']}: {e}")
+            continue
+    logging.error("All proxies failed. Falling back to direct connection.")
     try:
         exchange = ccxt.binance({
             'options': {'defaultType': 'future'},
@@ -127,10 +161,10 @@ def initialize_exchange():
         })
         exchange.load_markets()
         logging.info("Successfully connected using direct connection.")
-        return exchange
+        return exchange, None
     except Exception as e:
         logging.error(f"Direct connection failed: {e}")
-        raise Exception("Direct connection failed.")
+        raise Exception("All proxies and direct connection failed.")
 
 app = Flask(__name__)
 
@@ -140,7 +174,7 @@ closed_trades = []
 last_summary_time = 0
 
 try:
-    exchange = initialize_exchange()
+    exchange, proxies = initialize_exchange()
 except Exception as e:
     logging.error(f"Failed to initialize exchange: {e}")
     exit(1)
@@ -208,6 +242,13 @@ def calculate_ema(candles, period=21):
         ema = (close - ema) * multiplier + ema
     return ema
 
+# === RSI ===
+def calculate_rsi(candles, period=14):
+    closes = np.array([c[4] for c in candles])
+    if len(closes) < period:
+        return None
+    return talib.RSI(closes, timeperiod=period)[-1]
+
 # === PRICE ROUNDING ===
 def round_price(symbol, price):
     try:
@@ -221,25 +262,36 @@ def round_price(symbol, price):
 
 # === PATTERN DETECTION ===
 def detect_rising_three(candles):
-    c2, c1 = candles[-3], candles[-2]
-    avg_volume = sum(c[5] for c in candles[-5:-1]) / 4
+    c2, c1, c0 = candles[-4], candles[-3], candles[-2]
+    avg_volume = sum(c[5] for c in candles[-6:-1]) / 5
     big_green = is_bullish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT and c2[5] > avg_volume
     small_red_1 = (
         is_bearish(c1) and body_pct(c1) <= MAX_SMALL_BODY_PCT and
         lower_wick_pct(c1) >= MIN_LOWER_WICK_PCT and
         c1[4] > c2[3] + (c2[2] - c2[3]) * 0.3 and c1[5] < c2[5]
     )
-    return big_green and small_red_1
+    small_red_0 = (
+        is_bearish(c0) and body_pct(c0) <= MAX_SMALL_BODY_PCT and
+        lower_wick_pct(c0) >= MIN_LOWER_WICK_PCT and
+        c0[4] > c2[3] + (c2[2] - c2[3]) * 0.3 and c0[5] < c2[5]
+    )
+    volume_decreasing = c1[5] > c0[5]
+    return big_green and small_red_1 and small_red_0 and volume_decreasing
 
 def detect_falling_three(candles):
-    c2, c1 = candles[-3], candles[-2]
-    avg_volume = sum(c[5] for c in candles[-5:-1]) / 4
+    c2, c1, c0 = candles[-4], candles[-3], candles[-2]
+    avg_volume = sum(c[5] for c in candles[-6:-1]) / 5
     big_red = is_bearish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT and c2[5] > avg_volume
     small_green_1 = (
         is_bullish(c1) and body_pct(c1) <= MAX_SMALL_BODY_PCT and
         c1[4] < c2[2] - (c2[2] - c2[3]) * 0.3 and c1[5] < c2[5]
     )
-    return big_red and small_green_1
+    small_green_0 = (
+        is_bullish(c0) and body_pct(c0) <= MAX_SMALL_BODY_PCT and
+        c0[4] < c2[2] - (c2[2] - c2[3]) * 0.3 and c0[5] < c2[5]
+    )
+    volume_decreasing = c1[5] > c0[5]
+    return big_red and small_green_1 and small_green_0 and volume_decreasing
 
 # === SYMBOLS ===
 def get_symbols():
@@ -372,17 +424,19 @@ def process_symbol(symbol, alert_queue):
 
         ema21 = calculate_ema(candles, period=21)
         ema9 = calculate_ema(candles, period=9)
-        if ema21 is None or ema9 is None:
+        rsi = calculate_rsi(candles, period=RSI_PERIOD)
+        if ema21 is None or ema9 is None or rsi is None:
             return
 
         signal_time = candles[-2][0]
-        first_small_candle_close = round_price(symbol, candles[-2][4])
-        big_candle_close = round_price(symbol, candles[-3][4])
+        first_small_candle_close = round_price(symbol, candles[-3][4])
+        second_small_candle_close = round_price(symbol, candles[-2][4])
+        big_candle_close = round_price(symbol, candles[-4][4])
 
         if detect_rising_three(candles):
-            first_candle_analysis = analyze_first_small_candle(candles[-2], 'rising')
+            first_candle_analysis = analyze_first_small_candle(candles[-3], 'rising')
             if first_candle_analysis['body_pct'] > BODY_SIZE_THRESHOLD:
-                return  # Skip non-reversed trades silently
+                return
             if sent_signals.get((symbol, 'rising')) == signal_time:
                 return
             sent_signals[(symbol, 'rising')] = signal_time
@@ -396,20 +450,19 @@ def process_symbol(symbol, alert_queue):
             if green_count == 2:
                 category = 'two_green'
             elif green_count == 1:
-                category = 'one_green_one_caution'
-            elif green_count == 0:
-                category = 'two_cautions'
+                category = 'one_green'
             else:
-                return
+                category = 'two_cautions'
             side = 'sell'
             entry_price = first_small_candle_close
             tp = round_price(symbol, entry_price * (1 - TP_PCT))
             sl = round_price(symbol, entry_price * (1 + SL_PCT))
             pattern = 'rising'
             msg = (
-                f"{symbol} - REVERSED SELL PATTERN\n"
+                f"{symbol} - {'REVERSED SELL' if side == 'sell' else 'RISING'} PATTERN\n"
                 f"Above 21 ema - {ema_status['price_ema21']}\n"
                 f"ema 9 above 21 - {ema_status['ema9_ema21']}\n"
+                f"RSI: {rsi:.2f}\n"
                 f"First small candle: {first_candle_analysis['text']}\n"
                 f"entry - {entry_price}\n"
                 f"tp - {tp}\n"
@@ -419,9 +472,9 @@ def process_symbol(symbol, alert_queue):
             alert_queue.put((symbol, msg, ema_status, category, side, entry_price, tp, sl, first_candle_analysis['text'], first_candle_analysis['status'], first_candle_analysis['body_pct'], pattern))
 
         elif detect_falling_three(candles):
-            first_candle_analysis = analyze_first_small_candle(candles[-2], 'falling')
+            first_candle_analysis = analyze_first_small_candle(candles[-3], 'falling')
             if first_candle_analysis['body_pct'] > BODY_SIZE_THRESHOLD:
-                return  # Skip non-reversed trades silently
+                return
             if sent_signals.get((symbol, 'falling')) == signal_time:
                 return
             sent_signals[(symbol, 'falling')] = signal_time
@@ -435,20 +488,19 @@ def process_symbol(symbol, alert_queue):
             if green_count == 2:
                 category = 'two_green'
             elif green_count == 1:
-                category = 'one_green_one_caution'
-            elif green_count == 0:
-                category = 'two_cautions'
+                category = 'one_green'
             else:
-                return
+                category = 'two_cautions'
             side = 'buy'
             entry_price = first_small_candle_close
             tp = round_price(symbol, entry_price * (1 + TP_PCT))
             sl = round_price(symbol, entry_price * (1 - SL_PCT))
             pattern = 'falling'
             msg = (
-                f"{symbol} - REVERSED BUY PATTERN\n"
+                f"{symbol} - {'REVERSED BUY' if side == 'buy' else 'FALLING'} PATTERN\n"
                 f"Below 21 ema - {ema_status['price_ema21']}\n"
                 f"ema 9 below 21 - {ema_status['ema9_ema21']}\n"
+                f"RSI: {rsi:.2f}\n"
                 f"First small candle: {first_candle_analysis['text']}\n"
                 f"entry - {entry_price}\n"
                 f"tp - {tp}\n"
@@ -577,7 +629,7 @@ def scan_loop():
         if current_time - last_summary_time >= SUMMARY_INTERVAL:
             all_closed_trades = load_closed_trades()
             two_green_trades = [t for t in all_closed_trades if t['category'] == 'two_green']
-            one_green_one_caution_trades = [t for t in all_closed_trades if t['category'] == 'one_green_one_caution']
+            one_green_trades = [t for t in all_closed_trades if t['category'] == 'one_green']
             two_cautions_trades = [t for t in all_closed_trades if t['category'] == 'two_cautions']
 
             def get_pressure_metrics(trades):
@@ -615,7 +667,7 @@ def scan_loop():
                 }
 
             two_green_metrics = get_pressure_metrics(two_green_trades)
-            one_green_one_caution_metrics = get_pressure_metrics(one_green_one_caution_trades)
+            one_green_metrics = get_pressure_metrics(one_green_trades)
             two_cautions_metrics = get_pressure_metrics(two_cautions_trades)
 
             total_pnl = sum(t.get('pnl', 0) for t in all_closed_trades)
@@ -645,11 +697,11 @@ def scan_loop():
                 f"  - Total: {two_green_metrics['small_body']['total'][0]} trades (W: {two_green_metrics['small_body']['total'][1]}, L: {two_green_metrics['small_body']['total'][2]}, TP: {two_green_metrics['small_body']['total'][3]}, SL: {two_green_metrics['small_body']['total'][4]}), PnL: ${two_green_metrics['small_body']['total'][5]:.2f} ({two_green_metrics['small_body']['total'][6]:.2f}%), Win Rate: {two_green_metrics['small_body']['total'][7]:.2f}%\n"
                 f"  - Overall Total: {two_green_metrics['total'][0]} trades (W: {two_green_metrics['total'][1]}, L: {two_green_metrics['total'][2]}, TP: {two_green_metrics['total'][3]}, SL: {two_green_metrics['total'][4]}), PnL: ${two_green_metrics['total'][5]:.2f} ({two_green_metrics['total'][6]:.2f}%), Win Rate: {two_green_metrics['total'][7]:.2f}%\n"
                 f"- ✅⚠️ One Green One Caution:\n"
-                f"  - Neutral ✅: {one_green_one_caution_metrics['small_body']['neutral'][0]} trades (W: {one_green_one_caution_metrics['small_body']['neutral'][1]}, L: {one_green_one_caution_metrics['small_body']['neutral'][2]}, TP: {one_green_one_caution_metrics['small_body']['neutral'][3]}, SL: {one_green_one_caution_metrics['small_body']['neutral'][4]}), PnL: ${one_green_one_caution_metrics['small_body']['neutral'][5]:.2f} ({one_green_one_caution_metrics['small_body']['neutral'][6]:.2f}%), Win Rate: {one_green_one_caution_metrics['small_body']['neutral'][7]:.2f}%\n"
-                f"  - Selling Pressure ⚠️: {one_green_one_caution_metrics['small_body']['selling'][0]} trades (W: {one_green_one_caution_metrics['small_body']['selling'][1]}, L: {one_green_one_caution_metrics['small_body']['selling'][2]}, TP: {one_green_one_caution_metrics['small_body']['selling'][3]}, SL: {one_green_one_caution_metrics['small_body']['selling'][4]}), PnL: ${one_green_one_caution_metrics['small_body']['selling'][5]:.2f} ({one_green_one_caution_metrics['small_body']['selling'][6]:.2f}%), Win Rate: {one_green_one_caution_metrics['small_body']['selling'][7]:.2f}%\n"
-                f"  - Buying Pressure ⚠️: {one_green_one_caution_metrics['small_body']['buying'][0]} trades (W: {one_green_one_caution_metrics['small_body']['buying'][1]}, L: {one_green_one_caution_metrics['small_body']['buying'][2]}, TP: {one_green_one_caution_metrics['small_body']['buying'][3]}, SL: {one_green_one_caution_metrics['small_body']['buying'][4]}), PnL: ${one_green_one_caution_metrics['small_body']['buying'][5]:.2f} ({one_green_one_caution_metrics['small_body']['buying'][6]:.2f}%), Win Rate: {one_green_one_caution_metrics['small_body']['buying'][7]:.2f}%\n"
-                f"  - Total: {one_green_one_caution_metrics['small_body']['total'][0]} trades (W: {one_green_one_caution_metrics['small_body']['total'][1]}, L: {one_green_one_caution_metrics['small_body']['total'][2]}, TP: {one_green_one_caution_metrics['small_body']['total'][3]}, SL: {one_green_one_caution_metrics['small_body']['total'][4]}), PnL: ${one_green_one_caution_metrics['small_body']['total'][5]:.2f} ({one_green_one_caution_metrics['small_body']['total'][6]:.2f}%), Win Rate: {one_green_one_caution_metrics['small_body']['total'][7]:.2f}%\n"
-                f"  - Overall Total: {one_green_one_caution_metrics['total'][0]} trades (W: {one_green_one_caution_metrics['total'][1]}, L: {one_green_one_caution_metrics['total'][2]}, TP: {one_green_one_caution_metrics['total'][3]}, SL: {one_green_one_caution_metrics['total'][4]}), PnL: ${one_green_one_caution_metrics['total'][5]:.2f} ({one_green_one_caution_metrics['total'][6]:.2f}%), Win Rate: {one_green_one_caution_metrics['total'][7]:.2f}%\n"
+                f"  - Neutral ✅: {one_green_metrics['small_body']['neutral'][0]} trades (W: {one_green_metrics['small_body']['neutral'][1]}, L: {one_green_metrics['small_body']['neutral'][2]}, TP: {one_green_metrics['small_body']['neutral'][3]}, SL: {one_green_metrics['small_body']['neutral'][4]}), PnL: ${one_green_metrics['small_body']['neutral'][5]:.2f} ({one_green_metrics['small_body']['neutral'][6]:.2f}%), Win Rate: {one_green_metrics['small_body']['neutral'][7]:.2f}%\n"
+                f"  - Selling Pressure ⚠️: {one_green_metrics['small_body']['selling'][0]} trades (W: {one_green_metrics['small_body']['selling'][1]}, L: {one_green_metrics['small_body']['selling'][2]}, TP: {one_green_metrics['small_body']['selling'][3]}, SL: {one_green_metrics['small_body']['selling'][4]}), PnL: ${one_green_metrics['small_body']['selling'][5]:.2f} ({one_green_metrics['small_body']['selling'][6]:.2f}%), Win Rate: {one_green_metrics['small_body']['selling'][7]:.2f}%\n"
+                f"  - Buying Pressure ⚠️: {one_green_metrics['small_body']['buying'][0]} trades (W: {one_green_metrics['small_body']['buying'][1]}, L: {one_green_metrics['small_body']['buying'][2]}, TP: {one_green_metrics['small_body']['buying'][3]}, SL: {one_green_metrics['small_body']['buying'][4]}), PnL: ${one_green_metrics['small_body']['buying'][5]:.2f} ({one_green_metrics['small_body']['buying'][6]:.2f}%), Win Rate: {one_green_metrics['small_body']['buying'][7]:.2f}%\n"
+                f"  - Total: {one_green_metrics['small_body']['total'][0]} trades (W: {one_green_metrics['small_body']['total'][1]}, L: {one_green_metrics['small_body']['total'][2]}, TP: {one_green_metrics['small_body']['total'][3]}, SL: {one_green_metrics['small_body']['total'][4]}), PnL: ${one_green_metrics['small_body']['total'][5]:.2f} ({one_green_metrics['small_body']['total'][6]:.2f}%), Win Rate: {one_green_metrics['small_body']['total'][7]:.2f}%\n"
+                f"  - Overall Total: {one_green_metrics['total'][0]} trades (W: {one_green_metrics['total'][1]}, L: {one_green_metrics['total'][2]}, TP: {one_green_metrics['total'][3]}, SL: {one_green_metrics['total'][4]}), PnL: ${one_green_metrics['total'][5]:.2f} ({one_green_metrics['total'][6]:.2f}%), Win Rate: {one_green_metrics['total'][7]:.2f}%\n"
                 f"- ⚠️⚠️ Two Cautions:\n"
                 f"  - Neutral ✅: {two_cautions_metrics['small_body']['neutral'][0]} trades (W: {two_cautions_metrics['small_body']['neutral'][1]}, L: {two_cautions_metrics['small_body']['neutral'][2]}, TP: {two_cautions_metrics['small_body']['neutral'][3]}, SL: {two_cautions_metrics['small_body']['neutral'][4]}), PnL: ${two_cautions_metrics['small_body']['neutral'][5]:.2f} ({two_cautions_metrics['small_body']['neutral'][6]:.2f}%), Win Rate: {two_cautions_metrics['small_body']['neutral'][7]:.2f}%\n"
                 f"  - Selling Pressure ⚠️: {two_cautions_metrics['small_body']['selling'][0]} trades (W: {two_cautions_metrics['small_body']['selling'][1]}, L: {two_cautions_metrics['small_body']['selling'][2]}, TP: {two_cautions_metrics['small_body']['selling'][3]}, SL: {two_cautions_metrics['small_body']['selling'][4]}), PnL: ${two_cautions_metrics['small_body']['selling'][5]:.2f} ({two_cautions_metrics['small_body']['selling'][6]:.2f}%), Win Rate: {two_cautions_metrics['small_body']['selling'][7]:.2f}%\n"
