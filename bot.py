@@ -15,7 +15,7 @@ import numpy as np
 import logging
 
 # === CONFIG ===
-BOT_TOKEN = '7402265241:AAHRDxd12LRizl1qTsQggEEoJ-BeWME3ERo'
+BOT_TOKEN = '7662307654:AAG5-juB1faNaFZfC8zjf4LwlZMzs6lEmtE'
 CHAT_ID = '655537138'
 TIMEFRAME = '15m'
 MIN_BIG_BODY_PCT = 1.0
@@ -44,7 +44,16 @@ SUMMARY_INTERVAL = 3600
 
 # === PROXY CONFIGURATION ===
 PROXY_LIST = [
-  
+    {'host': '23.95.150.145', 'port': '6114', 'username': 'ihpzjkrb', 'password': '4s5y5kaq34cs'},
+    {'host': '198.23.239.134', 'port': '6540', 'username': 'ihpzjkrb', 'password': '4s5y5kaq34cs'},
+    {'host': '45.38.107.97', 'port': '6014', 'username': 'ihpzjkrb', 'password': '4s5y5kaq34cs'},
+    {'host': '107.172.163.27', 'port': '6543', 'username': 'ihpzjkrb', 'password': '4s5y5kaq34cs'},
+    {'host': '64.137.96.74', 'port': '6641', 'username': 'ihpzjkrb', 'password': '4s5y5kaq34cs'},
+    {'host': '45.43.186.39', 'port': '6257', 'username': 'ihpzjkrb', 'password': '4s5y5kaq34cs'},
+    {'host': '154.203.43.247', 'port': '5536', 'username': 'ihpzjkrb', 'password': '4s5y5kaq34cs'},
+    {'host': '216.10.27.159', 'port': '6837', 'username': 'ihpzjkrb', 'password': '4s5y5kaq34cs'},
+    {'host': '136.0.207.84', 'port': '6661', 'username': 'ihpzjkrb', 'password': '4s5y5kaq34cs'},
+    {'host': '142.147.128.93', 'port': '6593', 'username': 'ihpzjkrb', 'password': '4s5y5kaq34cs'},
 ]
 
 def get_proxy_config(proxy):
@@ -383,7 +392,7 @@ def check_tp_sl():
                             save_closed_trades(closed_trade)
                             ema_status = trade['ema_status']
                             new_msg = (
-                                f"$${sym} - {'REVERSED SELL' if trade['side'] == 'sell' and trade['pattern'] == 'rising' else 'REVERSED BUY' if trade['side'] == 'buy' and trade['pattern'] == 'falling' else trade['pattern'].upper()} PATTERN$$\n"
+                                f"{sym} - {'REVERSED SELL' if trade['side'] == 'sell' and trade['pattern'] == 'rising' else 'REVERSED BUY' if trade['side'] == 'buy' and trade['pattern'] == 'falling' else trade['pattern'].upper()} PATTERN\n"
                                 f"{'Above' if trade['pattern'] == 'rising' else 'Below'} 21 ema - {ema_status['price_ema21']}\n"
                                 f"ema 9 {'above' if trade['pattern'] == 'rising' else 'below'} 21 - {ema_status['ema9_ema21']}\n"
                                 f"First small candle: {trade['first_candle_analysis']}\n"
@@ -454,18 +463,20 @@ def process_symbol(symbol, alert_queue):
             else:
                 category = 'two_cautions'
             side = 'sell'
-            entry_price = first_small_candle_close
-            tp = round_price(symbol, entry_price * (1 - TP_PCT))
+            entry_price = second_small_candle_close
+            tp = round_price(symbol, first_small_candle_close * (1 - TP_PCT))
             sl = round_price(symbol, entry_price * (1 + SL_PCT))
+            tp_distance = (entry_price - tp) / entry_price * 100
             pattern = 'rising'
             msg = (
-                f"$${symbol} - {'REVERSED SELL' if side == 'sell' else 'RISING'} PATTERN$$\n"
+                f"{symbol} - {'REVERSED SELL' if side == 'sell' else 'RISING'} PATTERN\n"
                 f"Above 21 ema - {ema_status['price_ema21']}\n"
                 f"ema 9 above 21 - {ema_status['ema9_ema21']}\n"
                 f"RSI: {rsi:.2f}\n"
                 f"First small candle: {first_candle_analysis['text']}\n"
                 f"entry - {entry_price}\n"
                 f"tp - {tp}\n"
+                f"TP Distance: {tp_distance:.2f}%\n"
                 f"sl - {sl}\n"
                 f"Trade going on..."
             )
@@ -492,18 +503,20 @@ def process_symbol(symbol, alert_queue):
             else:
                 category = 'two_cautions'
             side = 'buy'
-            entry_price = first_small_candle_close
-            tp = round_price(symbol, entry_price * (1 + TP_PCT))
+            entry_price = second_small_candle_close
+            tp = round_price(symbol, first_small_candle_close * (1 + TP_PCT))
             sl = round_price(symbol, entry_price * (1 - SL_PCT))
+            tp_distance = (tp - entry_price) / entry_price * 100
             pattern = 'falling'
             msg = (
-                f"$${symbol} - {'REVERSED BUY' if side == 'buy' else 'FALLING'} PATTERN$$\n"
+                f"{symbol} - {'REVERSED BUY' if side == 'buy' else 'FALLING'} PATTERN\n"
                 f"Below 21 ema - {ema_status['price_ema21']}\n"
                 f"ema 9 below 21 - {ema_status['ema9_ema21']}\n"
                 f"RSI: {rsi:.2f}\n"
                 f"First small candle: {first_candle_analysis['text']}\n"
                 f"entry - {entry_price}\n"
                 f"tp - {tp}\n"
+                f"TP Distance: {tp_distance:.2f}%\n"
                 f"sl - {sl}\n"
                 f"Trade going on..."
             )
