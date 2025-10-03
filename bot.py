@@ -24,9 +24,10 @@ MIN_LOWER_WICK_PCT = 20.0
 MAX_WORKERS = 5
 BATCH_DELAY = 2.0
 NUM_CHUNKS = 8
-CAPITAL = 10.0
-SL_PCT = 1.5 / 100
-TP_PCT = 0.7 / 100
+CAPITAL = 20.0
+LEVERAGE = 20
+SL_PCT = 3.0 / 100
+TP_PCT = 1.0 / 100
 TP_SL_CHECK_INTERVAL = 30
 TRADE_FILE = 'open_trades.json'
 CLOSED_TRADE_FILE = 'closed_trades.json'
@@ -376,12 +377,13 @@ def check_tp_sl():
                                 pnl = (hit_price - trade['entry']) / trade['entry'] * 100
                             else:
                                 pnl = (trade['entry'] - hit_price) / trade['entry'] * 100
-                            logging.info(f"TP/SL hit for {sym}: {hit}, PnL: {pnl:.2f}%")
-                            profit = CAPITAL * pnl / 100
+                            leveraged_pnl_pct = pnl * LEVERAGE
+                            profit = CAPITAL * leveraged_pnl_pct / 100
+                            logging.info(f"TP/SL hit for {sym}: {hit}, Leveraged PnL: {leveraged_pnl_pct:.2f}%")
                             closed_trade = {
                                 'symbol': sym,
                                 'pnl': profit,
-                                'pnl_pct': pnl,
+                                'pnl_pct': leveraged_pnl_pct,
                                 'category': trade['category'],
                                 'ema_status': trade['ema_status'],
                                 'pressure_status': trade['pressure_status'],
@@ -399,7 +401,7 @@ def check_tp_sl():
                                 f"entry - {trade['entry']}\n"
                                 f"tp - {trade['tp']}\n"
                                 f"sl - {trade['sl']}\n"
-                                f"Profit/Loss: {pnl:.2f}% (${profit:.2f})\n{hit}"
+                                f"Profit/Loss: {leveraged_pnl_pct:.2f}% (${profit:.2f})\n{hit}"
                             )
                             trade['msg'] = new_msg
                             trade['hit'] = hit
