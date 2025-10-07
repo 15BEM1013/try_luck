@@ -25,10 +25,9 @@ MAX_WORKERS = 5
 BATCH_DELAY = 2.0
 NUM_CHUNKS = 8
 CAPITAL = 20.0
-LEVERAGE = 20
-SL_PCT = 3.0 / 100
+LEVERAGE = 5
 TP_PCT = 1.0 / 100
-TP_SL_CHECK_INTERVAL = 30
+TP_CHECK_INTERVAL = 30
 TRADE_FILE = 'open_trades.json'
 CLOSED_TRADE_FILE = 'closed_trades.json'
 MAX_OPEN_TRADES = 5
@@ -42,6 +41,9 @@ RSI_OVERBOUGHT = 80
 RSI_OVERSOLD = 30
 BODY_SIZE_THRESHOLD = 0.1
 SUMMARY_INTERVAL = 3600
+ADD_LEVELS = [(0.015, 0.5), (0.03, 0.5), (0.045, 0.2)]  # (against_pct, multiplier_of_initial)
+ACCOUNT_SIZE = 1000.0
+MAX_RISK_PCT = 4.5 / 100
 
 # === PROXY CONFIGURATION ===
 PROXY_LIST = [
@@ -308,8 +310,8 @@ def get_next_candle_close():
         seconds_to_next += 15 * 60
     return time.time() + seconds_to_next
 
-# === TP/SL CHECK ===
-def check_tp_sl():
+# === TP CHECK (NO SL) ===
+def check_tp():
     global closed_trades
     while True:
         try:
@@ -331,18 +333,10 @@ def check_tp_sl():
                                         hit = "✅ TP hit"
                                         hit_price = trade['tp']
                                         break
-                                    if low <= trade['sl']:
-                                        hit = "❌ SL hit"
-                                        hit_price = trade['sl']
-                                        break
                                 else:
                                     if low <= trade['tp']:
                                         hit = "✅ TP hit"
                                         hit_price = trade['tp']
-                                        break
-                                    if high >= trade['sl']:
-                                        hit = "❌ SL hit"
-                                        hit_price = trade['sl']
                                         break
 
                         if not hit:
@@ -352,25 +346,19 @@ def check_tp_sl():
                                 if last >= trade['tp']:
                                     hit = "✅ TP hit"
                                     hit_price = trade['tp']
-                                elif last <= trade['sl']:
-                                    hit = "❌ SL hit"
-                                    hit_price = trade['sl']
                             else:
                                 if last <= trade['tp']:
                                     hit = "✅ TP hit"
                                     hit_price = trade['tp']
-                                elif last >= trade['sl']:
-                                    hit = "❌ SL hit"
-                                    hit_price = trade['sl']
 
                         if hit:
                             if trade['side'] == 'buy':
-                                pnl = (hit_price - trade['entry']) / trade['entry'] * 100
+                                pnl = (hit_price - trade['average_entry']) / trade['average_entry'] * 100
                             else:
-                                pnl = (trade['entry'] - hit_price) / trade['entry'] * 100
+                                pnl = (trade['average_entry'] - hit_price) / trade['average_entry'] * 100
                             leveraged_pnl_pct = pnl * LEVERAGE
-                            profit = CAPITAL * leveraged_pnl_pct / 100
-                            logging.info(f"TP/SL hit for {sym}: {hit}, Leveraged PnL: {leveraged_pnl_pct:.2f}%")
+                            profit = trade['total_invested'] * leveraged_pnl_pct / 100
+                            logging.info(f"TP hit for {sym}: {hit}, Leveraged PnL: {leveraged_pnl_pct:.2f}%")
                             closed_trade = {
                                 'symbol': sym,
                                 'pnl': profit,
@@ -391,7 +379,6 @@ def check_tp_sl():
                                 f"First small candle: {trade['first_candle_analysis']}\n"
                                 f"entry - {trade['entry']}\n"
                                 f"tp - {trade['tp']}\n"
-                                f"sl - {trade['sl']}\n"
                                 f"Profit/Loss: {leveraged_pnl_pct:.2f}% (${profit:.2f})\n{hit}"
                             )
                             trade['msg'] = new_msg
@@ -402,10 +389,10 @@ def check_tp_sl():
                             save_trades()
                             logging.info(f"Trade closed for {sym}")
                     except Exception as e:
-                        logging.error(f"TP/SL check error on {sym}: {e}")
-            time.sleep(TP_SL_CHECK_INTERVAL)
+                        logging.error(f"TP check error on {sym}: {e}")
+            time.sleep(TP_CHECK_INTERVAL)
         except Exception as e:
-            logging.error(f"TP/SL loop error: {e}")
+            logging.error(f"TP loop error: {e}")
             time.sleep(5)
 
 # === PROCESS SYMBOL ===
@@ -457,9 +444,7 @@ def process_symbol(symbol, alert_queue):
                 category = 'two_cautions'
             side = 'sell'
             entry_price = second_small_candle_close
-            tp = round_price(symbol, first_small_candle_close * (1 - TP_PCT))
-            sl = round_price(symbol, entry_price * (1 + SL_PCT))
-            tp_distance = (entry_price - tp) / entry_price * 100
+            tp = round_price(symbol, entry_price * (1 - TP_PCT))
             pattern = 'rising'
             msg = (
                 f"{symbol} - {'REVERSED SELL' if side == 'sell' else 'RISING'} PATTERN\n"
@@ -469,11 +454,9 @@ def process_symbol(symbol, alert_queue):
                 f"First small candle: {first_candle_analysis['text']}\n"
                 f"entry - {entry_price}\n"
                 f"tp - {tp}\n"
-                f"TP Distance: {tp_distance:.2f}%\n"
-                f"sl - {sl}\n"
                 f"Trade going on..."
             )
-            alert_queue.put((symbol, msg, ema_status, category, side, entry_price, tp, sl, first_candle_analysis['text'], first_candle_analysis['status'], first_candle_analysis['body_pct'], pattern))
+            alert_queue.put((symbol, msg, ema_status, category, side, entry_price, tp, first_candle_analysis['text'], first_candle_analysis['status'], first_candle_analysis['body_pct'], pattern))
 
         elif detect_falling_three(candles):
             first_candle_analysis = analyze_first_small_candle(candles[-3], 'falling')
@@ -497,9 +480,7 @@ def process_symbol(symbol, alert_queue):
                 category = 'two_cautions'
             side = 'buy'
             entry_price = second_small_candle_close
-            tp = round_price(symbol, first_small_candle_close * (1 + TP_PCT))
-            sl = round_price(symbol, entry_price * (1 - SL_PCT))
-            tp_distance = (tp - entry_price) / entry_price * 100
+            tp = round_price(symbol, entry_price * (1 + TP_PCT))
             pattern = 'falling'
             msg = (
                 f"{symbol} - {'REVERSED BUY' if side == 'buy' else 'FALLING'} PATTERN\n"
@@ -509,11 +490,9 @@ def process_symbol(symbol, alert_queue):
                 f"First small candle: {first_candle_analysis['text']}\n"
                 f"entry - {entry_price}\n"
                 f"tp - {tp}\n"
-                f"TP Distance: {tp_distance:.2f}%\n"
-                f"sl - {sl}\n"
                 f"Trade going on..."
             )
-            alert_queue.put((symbol, msg, ema_status, category, side, entry_price, tp, sl, first_candle_analysis['text'], first_candle_analysis['status'], first_candle_analysis['body_pct'], pattern))
+            alert_queue.put((symbol, msg, ema_status, category, side, entry_price, tp, first_candle_analysis['text'], first_candle_analysis['status'], first_candle_analysis['body_pct'], pattern))
 
     except ccxt.RateLimitExceeded:
         time.sleep(5)
@@ -541,7 +520,7 @@ def scan_loop():
     def send_alerts():
         while True:
             try:
-                symbol, msg, ema_status, category, side, entry_price, tp, sl, first_candle_analysis, pressure_status, body_pct, pattern = alert_queue.get(timeout=1)
+                symbol, msg, ema_status, category, side, entry_price, tp, first_candle_analysis, pressure_status, body_pct, pattern = alert_queue.get(timeout=1)
                 with trade_lock:
                     if len(open_trades) < MAX_OPEN_TRADES:
                         mid = send_telegram(msg)
@@ -550,7 +529,6 @@ def scan_loop():
                                 'side': side,
                                 'entry': entry_price,
                                 'tp': tp,
-                                'sl': sl,
                                 'msg': msg,
                                 'msg_id': mid,
                                 'ema_status': ema_status,
@@ -559,7 +537,11 @@ def scan_loop():
                                 'pressure_status': pressure_status,
                                 'body_pct': body_pct,
                                 'entry_time': int(time.time() * 1000),
-                                'pattern': pattern
+                                'pattern': pattern,
+                                'adds_done': 0,
+                                'average_entry': entry_price,
+                                'total_invested': CAPITAL,
+                                'initial_entry': entry_price
                             }
                             open_trades[symbol] = trade
                             save_trades()
@@ -584,7 +566,6 @@ def scan_loop():
                                             'side': side,
                                             'entry': entry_price,
                                             'tp': tp,
-                                            'sl': sl,
                                             'msg': msg,
                                             'msg_id': mid,
                                             'ema_status': ema_status,
@@ -593,7 +574,11 @@ def scan_loop():
                                             'pressure_status': pressure_status,
                                             'body_pct': body_pct,
                                             'entry_time': int(time.time() * 1000),
-                                            'pattern': pattern
+                                            'pattern': pattern,
+                                            'adds_done': 0,
+                                            'average_entry': entry_price,
+                                            'total_invested': CAPITAL,
+                                            'initial_entry': entry_price
                                         }
                                         open_trades[symbol] = trade
                                         save_trades()
@@ -613,7 +598,7 @@ def scan_loop():
                 time.sleep(1)
 
     threading.Thread(target=send_alerts, daemon=True).start()
-    threading.Thread(target=check_tp_sl, daemon=True).start()
+    threading.Thread(target=check_tp, daemon=True).start()
 
     while True:
         next_close = get_next_candle_close()
