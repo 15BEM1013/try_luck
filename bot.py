@@ -41,14 +41,12 @@ RSI_OVERBOUGHT = 80
 RSI_OVERSOLD = 30
 BODY_SIZE_THRESHOLD = 0.1
 SUMMARY_INTERVAL = 3600
-ADD_LEVELS = [(0.015, 0.5), (0.03, 0.5), (0.045, 0.2)]  # (against_pct, multiplier_of_initial)
+ADD_LEVELS = [(0.015, 5.0), (0.03, 10.0), (0.045, 15.0)]  # (against_pct, additional_dollar_amount)
 ACCOUNT_SIZE = 1000.0
 MAX_RISK_PCT = 4.5 / 100
 
 # === PROXY CONFIGURATION ===
-PROXY_LIST = [
-   
-]
+PROXY_LIST = []
 
 def get_proxy_config(proxy):
     return {
@@ -310,7 +308,7 @@ def get_next_candle_close():
         seconds_to_next += 15 * 60
     return time.time() + seconds_to_next
 
-# === TP CHECK (NO SL) ===
+# === TP CHECK AND DCA ===
 def check_tp():
     global closed_trades
     while True:
@@ -321,7 +319,10 @@ def check_tp():
                         hit = ""
                         pnl = 0
                         hit_price = None
+                        current_price = None
+                        dca_messages = trade.get('dca_messages', [])
 
+                        # Fetch 1-minute candles since entry or current price
                         entry_time = trade.get('entry_time')
                         if entry_time:
                             candles_1m = exchange.fetch_ohlcv(sym, '1m', since=entry_time, limit=2880)
@@ -338,20 +339,77 @@ def check_tp():
                                         hit = "✅ TP hit"
                                         hit_price = trade['tp']
                                         break
-
                         if not hit:
                             ticker = exchange.fetch_ticker(sym)
-                            last = round_price(sym, ticker['last'])
+                            current_price = round_price(sym, ticker['last'])
                             if trade['side'] == 'buy':
-                                if last >= trade['tp']:
+                                if current_price >= trade['tp']:
                                     hit = "✅ TP hit"
                                     hit_price = trade['tp']
                             else:
-                                if last <= trade['tp']:
+                                if current_price <= trade['tp']:
                                     hit = "✅ TP hit"
                                     hit_price = trade['tp']
 
+                        # Check for DCA levels
+                        if not hit and current_price:
+                            initial_entry = trade['initial_entry']
+                            adds_done = trade.get('adds_done', 0)
+                            total_invested = trade.get('total_invested', CAPITAL)
+                            average_entry = trade.get('average_entry', initial_entry)
+                            quantity = trade.get('quantity', total_invested / initial_entry)
+
+                            for i, (against_pct, add_amount) in enumerate(ADD_LEVELS):
+                                if adds_done > i:
+                                    continue  # Skip levels already added
+                                dca_triggered = False
+                                add_price = None
+                                if trade['side'] == 'buy' and current_price <= initial_entry * (1 - against_pct):
+                                    # Price dropped enough for buy trade
+                                    add_price = current_price
+                                    dca_triggered = True
+                                    dca_message = f"Added {i+1} - ${add_amount} at {against_pct*100}% below"
+                                elif trade['side'] == 'sell' and current_price >= initial_entry * (1 + against_pct):
+                                    # Price rose enough for sell trade
+                                    add_price = current_price
+                                    dca_triggered = True
+                                    dca_message = f"Added {i+1} - ${add_amount} at {against_pct*100}% above"
+                                if dca_triggered:
+                                    add_quantity = add_amount / add_price
+                                    total_quantity = quantity + add_quantity
+                                    total_invested += add_amount
+                                    average_entry = (quantity * average_entry + add_quantity * add_price) / total_quantity
+                                    # Update TP based on new average entry
+                                    new_tp = round_price(sym, average_entry * (1 + TP_PCT) if trade['side'] == 'buy' else average_entry * (1 - TP_PCT))
+                                    trade['adds_done'] = i + 1
+                                    trade['total_invested'] = total_invested
+                                    trade['average_entry'] = round_price(sym, average_entry)
+                                    trade['quantity'] = total_quantity
+                                    trade['tp'] = new_tp
+                                    dca_messages.append(dca_message)
+                                    trade['dca_messages'] = dca_messages
+                                    logging.info(f"Added ${add_amount} to {sym} at {add_price}, new avg entry: {average_entry}, new TP: {new_tp}, total invested: {total_invested}")
+                                    # Update Telegram message
+                                    new_msg = (
+                                        f"{sym} - {'REVERSED SELL' if trade['side'] == 'sell' and trade['pattern'] == 'rising' else 'REVERSED BUY' if trade['side'] == 'buy' and trade['pattern'] == 'falling' else trade['pattern'].upper()} PATTERN\n"
+                                        f"{'Above' if trade['pattern'] == 'rising' else 'Below'} 21 ema - {trade['ema_status']['price_ema21']}\n"
+                                        f"ema 9 {'above' if trade['pattern'] == 'rising' else 'below'} 21 - {trade['ema_status']['ema9_ema21']}\n"
+                                        f"First small candle: {trade['first_candle_analysis']}\n"
+                                        f"Initial entry - {trade['entry']}\n"
+                                        f"Average entry - {trade['average_entry']}\n"
+                                        f"Total invested - ${trade['total_invested']:.2f}\n"
+                                        f"DCA: {', '.join(dca_messages) if dca_messages else 'None'}\n"
+                                        f"TP - {trade['tp']}\n"
+                                        f"Trade going on..."
+                                    )
+                                    trade['msg'] = new_msg
+                                    edit_telegram_message(trade['msg_id'], new_msg)
+                                    save_trades()
+                                    break
+
+                        # Process TP hit
                         if hit:
+                            total_quantity = trade.get('quantity', total_invested / initial_entry)
                             if trade['side'] == 'buy':
                                 pnl = (hit_price - trade['average_entry']) / trade['average_entry'] * 100
                             else:
@@ -367,32 +425,36 @@ def check_tp():
                                 'ema_status': trade['ema_status'],
                                 'pressure_status': trade['pressure_status'],
                                 'hit': hit,
-                                'body_pct': trade['body_pct']
+                                'body_pct': trade['body_pct'],
+                                'adds_done': trade['adds_done'],
+                                'total_invested': trade['total_invested'],
+                                'dca_messages': trade.get('dca_messages', [])
                             }
                             closed_trades.append(closed_trade)
                             save_closed_trades(closed_trade)
-                            ema_status = trade['ema_status']
                             new_msg = (
                                 f"{sym} - {'REVERSED SELL' if trade['side'] == 'sell' and trade['pattern'] == 'rising' else 'REVERSED BUY' if trade['side'] == 'buy' and trade['pattern'] == 'falling' else trade['pattern'].upper()} PATTERN\n"
-                                f"{'Above' if trade['pattern'] == 'rising' else 'Below'} 21 ema - {ema_status['price_ema21']}\n"
-                                f"ema 9 {'above' if trade['pattern'] == 'rising' else 'below'} 21 - {ema_status['ema9_ema21']}\n"
+                                f"{'Above' if trade['pattern'] == 'rising' else 'Below'} 21 ema - {trade['ema_status']['price_ema21']}\n"
+                                f"ema 9 {'above' if trade['pattern'] == 'rising' else 'below'} 21 - {trade['ema_status']['ema9_ema21']}\n"
                                 f"First small candle: {trade['first_candle_analysis']}\n"
-                                f"entry - {trade['entry']}\n"
-                                f"tp - {trade['tp']}\n"
+                                f"Initial entry - {trade['entry']}\n"
+                                f"Average entry - {trade['average_entry']}\n"
+                                f"Total invested - ${trade['total_invested']:.2f}\n"
+                                f"DCA: {', '.join(dca_messages) if dca_messages else 'None'}\n"
+                                f"TP - {trade['tp']}\n"
                                 f"Profit/Loss: {leveraged_pnl_pct:.2f}% (${profit:.2f})\n{hit}"
                             )
                             trade['msg'] = new_msg
                             trade['hit'] = hit
-                            logging.info(f"Updating Telegram message for {sym}: {hit}")
                             edit_telegram_message(trade['msg_id'], new_msg)
                             del open_trades[sym]
                             save_trades()
                             logging.info(f"Trade closed for {sym}")
                     except Exception as e:
-                        logging.error(f"TP check error on {sym}: {e}")
+                        logging.error(f"TP/DCA check error on {sym}: {e}")
             time.sleep(TP_CHECK_INTERVAL)
         except Exception as e:
-            logging.error(f"TP loop error: {e}")
+            logging.error(f"TP/DCA loop error: {e}")
             time.sleep(5)
 
 # === PROCESS SYMBOL ===
@@ -452,8 +514,11 @@ def process_symbol(symbol, alert_queue):
                 f"ema 9 above 21 - {ema_status['ema9_ema21']}\n"
                 f"RSI: {rsi:.2f}\n"
                 f"First small candle: {first_candle_analysis['text']}\n"
-                f"entry - {entry_price}\n"
-                f"tp - {tp}\n"
+                f"Initial entry - {entry_price}\n"
+                f"Average entry - {entry_price}\n"
+                f"Total invested - ${CAPITAL:.2f}\n"
+                f"DCA: None\n"
+                f"TP - {tp}\n"
                 f"Trade going on..."
             )
             alert_queue.put((symbol, msg, ema_status, category, side, entry_price, tp, first_candle_analysis['text'], first_candle_analysis['status'], first_candle_analysis['body_pct'], pattern))
@@ -488,8 +553,11 @@ def process_symbol(symbol, alert_queue):
                 f"ema 9 below 21 - {ema_status['ema9_ema21']}\n"
                 f"RSI: {rsi:.2f}\n"
                 f"First small candle: {first_candle_analysis['text']}\n"
-                f"entry - {entry_price}\n"
-                f"tp - {tp}\n"
+                f"Initial entry - {entry_price}\n"
+                f"Average entry - {entry_price}\n"
+                f"Total invested - ${CAPITAL:.2f}\n"
+                f"DCA: None\n"
+                f"TP - {tp}\n"
                 f"Trade going on..."
             )
             alert_queue.put((symbol, msg, ema_status, category, side, entry_price, tp, first_candle_analysis['text'], first_candle_analysis['status'], first_candle_analysis['body_pct'], pattern))
@@ -541,7 +609,9 @@ def scan_loop():
                                 'adds_done': 0,
                                 'average_entry': entry_price,
                                 'total_invested': CAPITAL,
-                                'initial_entry': entry_price
+                                'initial_entry': entry_price,
+                                'quantity': CAPITAL / entry_price,
+                                'dca_messages': []
                             }
                             open_trades[symbol] = trade
                             save_trades()
@@ -578,7 +648,9 @@ def scan_loop():
                                             'adds_done': 0,
                                             'average_entry': entry_price,
                                             'total_invested': CAPITAL,
-                                            'initial_entry': entry_price
+                                            'initial_entry': entry_price,
+                                            'quantity': CAPITAL / entry_price,
+                                            'dca_messages': []
                                         }
                                         open_trades[symbol] = trade
                                         save_trades()
