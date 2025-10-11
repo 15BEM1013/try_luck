@@ -322,37 +322,10 @@ def check_tp():
                         current_price = None
                         dca_messages = trade.get('dca_messages', [])
 
-                        # Fetch 1-minute candles since entry or current price
-                        entry_time = trade.get('entry_time')
-                        if entry_time:
-                            candles_1m = exchange.fetch_ohlcv(sym, '1m', since=entry_time, limit=2880)
-                            for c in candles_1m:
-                                high = c[2]
-                                low = c[3]
-                                if trade['side'] == 'buy':
-                                    if high >= trade['tp']:
-                                        hit = "TP hit"
-                                        hit_price = trade['tp']
-                                        break
-                                else:
-                                    if low <= trade['tp']:
-                                        hit = "TP hit"
-                                        hit_price = trade['tp']
-                                        break
-                        if not hit:
-                            ticker = exchange.fetch_ticker(sym)
-                            current_price = round_price(sym, ticker['last'])
-                            if trade['side'] == 'buy':
-                                if current_price >= trade['tp']:
-                                    hit = "TP hit"
-                                    hit_price = trade['tp']
-                            else:
-                                if current_price <= trade['tp']:
-                                    hit = "TP hit"
-                                    hit_price = trade['tp']
-
-                        # Check for DCA levels
-                        if not hit and current_price:
+                        # Check for DCA levels first
+                        ticker = exchange.fetch_ticker(sym)
+                        current_price = round_price(sym, ticker['last'])
+                        if current_price:
                             initial_entry = trade['initial_entry']
                             adds_done = trade.get('adds_done', 0)
                             total_invested = trade.get('total_invested', CAPITAL)
@@ -408,6 +381,32 @@ def check_tp():
                                     save_trades()
                                     break
 
+                        # TP check: Use historical candles only if no DCA has occurred, else use current price
+                        if trade.get('adds_done', 0) == 0 and trade.get('last_update_time'):
+                            candles_1m = exchange.fetch_ohlcv(sym, '1m', since=trade['last_update_time'], limit=2880)
+                            for c in candles_1m:
+                                high = c[2]
+                                low = c[3]
+                                if trade['side'] == 'buy':
+                                    if high >= trade['tp']:
+                                        hit = "TP hit"
+                                        hit_price = high
+                                        break
+                                else:
+                                    if low <= trade['tp']:
+                                        hit = "TP hit"
+                                        hit_price = low
+                                        break
+                        if not hit and current_price:
+                            if trade['side'] == 'buy':
+                                if current_price >= trade['tp']:
+                                    hit = "TP hit"
+                                    hit_price = current_price
+                            else:
+                                if current_price <= trade['tp']:
+                                    hit = "TP hit"
+                                    hit_price = current_price
+
                         # Process TP hit
                         if hit:
                             total_quantity = trade.get('quantity', total_invested / initial_entry)
@@ -417,7 +416,7 @@ def check_tp():
                                 pnl = (trade['average_entry'] - hit_price) / trade['average_entry'] * 100
                             leveraged_pnl_pct = pnl * LEVERAGE
                             profit = trade['total_invested'] * leveraged_pnl_pct / 100
-                            logging.info(f"TP hit for {sym}: {hit}, Leveraged PnL: {leveraged_pnl_pct:.2f}%")
+                            logging.info(f"TP hit for {sym}: {hit}, Leveraged PnL: {leveraged_pnl_pct:.2f}% at price {hit_price}")
                             closed_trade = {
                                 'symbol': sym,
                                 'pnl': profit,
@@ -618,6 +617,7 @@ def scan_loop():
                                 'pressure_status': pressure_status,
                                 'body_pct': body_pct,
                                 'entry_time': int(time.time() * 1000),
+                                'last_update_time': int(time.time() * 1000),  # Initialize last_update_time
                                 'pattern': pattern,
                                 'adds_done': 0,
                                 'average_entry': entry_price,
@@ -658,6 +658,7 @@ def scan_loop():
                                             'pressure_status': pressure_status,
                                             'body_pct': body_pct,
                                             'entry_time': int(time.time() * 1000),
+                                            'last_update_time': int(time.time() * 1000),  # Initialize last_update_time
                                             'pattern': pattern,
                                             'adds_done': 0,
                                             'average_entry': entry_price,
