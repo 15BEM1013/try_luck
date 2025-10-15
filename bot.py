@@ -15,22 +15,31 @@ import numpy as np
 import logging
 import traceback
 import psutil
+import random
 
-# === CONFIG ===
+# === ANTI-BAN CONFIG ===
 BOT_TOKEN = '7662307654:AAG5-juB1faNaFZfC8zjf4LwlZMzs6lEmtE'
 CHAT_ID = '655537138'
 TIMEFRAME = '15m'
 MIN_BIG_BODY_PCT = 1.0
 MAX_SMALL_BODY_PCT = 1.0
 MIN_LOWER_WICK_PCT = 20.0
-MAX_WORKERS = 3
-BATCH_DELAY = 5.0
-NUM_CHUNKS = 8
+
+# 🚨 ANTI-BAN SETTINGS
+MAX_WORKERS = 1          # Reduced from 3
+BATCH_DELAY = 15.0       # Increased from 5s
+NUM_CHUNKS = 20          # Increased from 8
+REQUEST_DELAY = 1.5      # New: 1.5s between requests
+MAX_REQS_PER_MIN = 10    # Binance limit
+SYMBOLS_PER_BATCH = 10   # Smaller batches
+PROXY_ROTATION = True    # Enable proxy rotation
+BACKOFF_MULTIPLIER = 2   # Exponential backoff
+
 CAPITAL = 20.0
 LEVERAGE = 5
 TP_PCT = 1.0 / 100
 SL_PCT = 6.0 / 100
-TP_CHECK_INTERVAL = 30
+TP_CHECK_INTERVAL = 60   # Increased from 30s
 TRADE_FILE = 'open_trades.json'
 CLOSED_TRADE_FILE = 'closed_trades.json'
 MAX_OPEN_TRADES = 5
@@ -48,8 +57,38 @@ ADD_LEVELS = [(0.015, 5.0), (0.03, 10.0), (0.045, 15.0)]
 ACCOUNT_SIZE = 1000.0
 MAX_RISK_PCT = 4.5 / 100
 
-# === PROXY CONFIGURATION ===
-PROXY_LIST = []
+# === PROXY POOL (ADD YOUR PROXIES HERE) ===
+PROXY_LIST = [
+    # Format: {'host': 'ip', 'port': 'port', 'username': 'user', 'password': 'pass'}
+    # Example: {'host': '123.45.67.89', 'port': '8080', 'username': 'user', 'password': 'pass'},
+]
+
+# === RATE LIMITER ===
+class RateLimiter:
+    def __init__(self, max_requests=10, window=60):
+        self.max_requests = max_requests
+        self.window = window
+        self.requests = []
+    
+    def wait_if_needed(self):
+        now = time.time()
+        self.requests = [t for t in self.requests if now - t < self.window]
+        if len(self.requests) >= self.max_requests:
+            sleep_time = self.window - (now - self.requests[0])
+            time.sleep(sleep_time + random.uniform(0.1, 0.5))
+        self.requests.append(now)
+
+rate_limiter = RateLimiter(MAX_REQS_PER_MIN, 60)
+
+# === PROXY MANAGER ===
+current_proxy_index = 0
+def get_next_proxy():
+    global current_proxy_index
+    if not PROXY_LIST:
+        return None
+    proxy = PROXY_LIST[current_proxy_index % len(PROXY_LIST)]
+    current_proxy_index += 1
+    return get_proxy_config(proxy)
 
 def get_proxy_config(proxy):
     return {
@@ -73,25 +112,23 @@ last_save_time = 0
 def save_trades():
     global last_save_time
     current_time = time.time()
-    if current_time - last_save_time >= 300:  # Save every 5 minutes
+    if current_time - last_save_time >= 300:
         try:
-            with open(TRADE_FILE, 'w') as f:
-                json.dump(open_trades, f, default=str)
+            with trade_lock:
+                with open(TRADE_FILE, 'w') as f:
+                    json.dump(open_trades, f, default=str)
             last_save_time = current_time
-            print(f"Trades saved to {TRADE_FILE}")
         except Exception as e:
-            print(f"Error saving trades: {e}")
+            logging.error(f"Error saving trades: {e}")
 
 def load_trades():
     global open_trades
     try:
         if os.path.exists(TRADE_FILE):
             with open(TRADE_FILE, 'r') as f:
-                loaded = json.load(f)
-                open_trades = {k: v for k, v in loaded.items()}
-            print(f"Loaded {len(open_trades)} trades from {TRADE_FILE}")
+                open_trades = {k: v for k, v in json.load(f).items()}
     except Exception as e:
-        print(f"Error loading trades: {e}")
+        logging.error(f"Error loading trades: {e}")
         open_trades = {}
 
 def save_closed_trades(closed_trade):
@@ -122,71 +159,88 @@ def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {'chat_id': CHAT_ID, 'text': msg}
     try:
-        response = requests.post(url, data=data, timeout=5, proxies=proxies).json()
-        print(f"Telegram sent: {msg}")
-        return response.get('result', {}).get('message_id')
+        response = requests.post(url, data=data, timeout=10)
+        return response.json().get('result', {}).get('message_id')
     except Exception as e:
-        print(f"Telegram error: {e}")
+        logging.error(f"Telegram error: {e}")
         return None
 
 def edit_telegram_message(message_id, new_text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
     try:
-        requests.post(url, data=data, timeout=5, proxies=proxies)
+        requests.post(url, data=data, timeout=10)
         print(f"Telegram updated: {new_text}")
     except Exception as e:
         print(f"Edit error: {e}")
 
-# === INIT ===
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-
+# === ENHANCED EXCHANGE INIT ===
 def initialize_exchange():
-    for proxy in PROXY_LIST:
+    # Try proxies first
+    if PROXY_ROTATION and PROXY_LIST:
+        for i, proxy in enumerate(PROXY_LIST):
+            try:
+                proxies = get_proxy_config(proxy)
+                exchange = ccxt.binance({
+                    'options': {'defaultType': 'future'},
+                    'proxies': proxies,
+                    'enableRateLimit': True,
+                    'rateLimit': 1200,  # 1200ms = 50 req/min safe limit
+                    'timeout': 30000,
+                })
+                exchange.load_markets()
+                logging.info(f"✅ Connected with proxy {i+1}: {proxy['host']}")
+                return exchange, proxies
+            except Exception as e:
+                logging.warning(f"Proxy {i+1} failed: {e}")
+                time.sleep(2)
+    
+    # Fallback to direct with max safety
+    logging.info("🔄 Using direct connection with max safety")
+    exchange = ccxt.binance({
+        'options': {'defaultType': 'future'},
+        'enableRateLimit': True,
+        'rateLimit': 1200,  # Very safe
+        'timeout': 30000,
+        'sandbox': False,
+    })
+    exchange.load_markets()
+    return exchange, None
+
+# === SAFE CANDLE FETCH ===
+def safe_fetch_ohlcv(exchange, symbol, timeframe, limit, max_retries=3):
+    rate_limiter.wait_if_needed()
+    for attempt in range(max_retries):
         try:
-            proxies = get_proxy_config(proxy)
-            logging.info(f"Trying proxy: {proxy['host']}:{proxy['port']}")
-            session = requests.Session()
-            retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-            session.mount('https://', HTTPAdapter(pool_maxsize=20, max_retries=retries))
-            exchange = ccxt.binance({
-                'options': {'defaultType': 'future'},
-                'proxies': proxies,
-                'enableRateLimit': True,
-                'session': session
-            })
-            exchange.load_markets()
-            logging.info(f"Successfully connected using proxy: {proxy['host']}:{proxy['port']}")
-            return exchange, proxies
-        except Exception as e:
-            logging.error(f"Failed to connect with proxy {proxy['host']}:{proxy['port']}: {e}")
-            continue
-    logging.error("All proxies failed. Falling back to direct connection.")
-    for attempt in range(3):
-        try:
-            exchange = ccxt.binance({'options': {'defaultType': 'future'}, 'enableRateLimit': True})
-            exchange.load_markets()
-            logging.info("Successfully connected using direct connection.")
-            return exchange, None
-        except Exception as e:
-            logging.error(f"Direct connection attempt {attempt+1} failed: {e}")
+            candles = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            time.sleep(REQUEST_DELAY + random.uniform(0, 0.5))  # Random jitter
+            return candles
+        except ccxt.RateLimitExceeded:
+            wait_time = 60 * (2 ** attempt)
+            logging.warning(f"Rate limited on {symbol}, waiting {wait_time}s")
+            time.sleep(wait_time)
+        except ccxt.NetworkError as e:
+            logging.warning(f"Network error on {symbol} (attempt {attempt+1}): {e}")
             time.sleep(2 ** attempt)
-    raise Exception("All connection attempts failed.")
+        except Exception as e:
+            logging.error(f"Fetch error on {symbol}: {e}")
+            time.sleep(1)
+    return None
 
-app = Flask(__name__)
-
-sent_signals = {}
-open_trades = {}
-closed_trades = []
-last_summary_time = 0
-active_threads = {'scan_loop': False, 'send_alerts': False, 'check_tp': False}
-
-try:
-    exchange, proxies = initialize_exchange()
-except Exception as e:
-    logging.error(f"Failed to initialize exchange: {e}")
-    exit(1)
+# === SAFE TICKER ===
+def safe_fetch_ticker(exchange, symbol, max_retries=3):
+    rate_limiter.wait_if_needed()
+    for attempt in range(max_retries):
+        try:
+            ticker = exchange.fetch_ticker(symbol)
+            time.sleep(REQUEST_DELAY)
+            return ticker
+        except ccxt.RateLimitExceeded:
+            time.sleep(60 * (2 ** attempt))
+        except Exception as e:
+            logging.warning(f"Ticker error on {symbol}: {e}")
+            time.sleep(2 ** attempt)
+    return None
 
 # === CANDLE HELPERS ===
 def is_bullish(c): return c[4] > c[1]
@@ -271,36 +325,36 @@ def round_price(symbol, price):
 
 # === PATTERN DETECTION ===
 def detect_rising_three(candles):
+    if len(candles) < 4: return False
     c2, c1, c0 = candles[-4], candles[-3], candles[-2]
     avg_volume = sum(c[5] for c in candles[-6:-1]) / 5
     big_green = is_bullish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT and c2[5] > avg_volume
     small_red_1 = (
         is_bearish(c1) and body_pct(c1) <= MAX_SMALL_BODY_PCT and
         lower_wick_pct(c1) >= MIN_LOWER_WICK_PCT and
-        c1[4] > c2[3] + (c2[2] - c2[3]) * 0.3 and c1[5] < c2[5]
+        c1[4] > c2[3] + (c2[2] - c2[3]) * 0.3
     )
     small_red_0 = (
         is_bearish(c0) and body_pct(c0) <= MAX_SMALL_BODY_PCT and
         lower_wick_pct(c0) >= MIN_LOWER_WICK_PCT and
-        c0[4] > c2[3] + (c2[2] - c2[3]) * 0.3 and c0[5] < c2[5]
+        c0[4] > c2[3] + (c2[2] - c2[3]) * 0.3
     )
-    volume_decreasing = c1[5] > c0[5]
-    return big_green and small_red_1 and small_red_0 and volume_decreasing
+    return big_green and small_red_1 and small_red_0
 
 def detect_falling_three(candles):
+    if len(candles) < 4: return False
     c2, c1, c0 = candles[-4], candles[-3], candles[-2]
     avg_volume = sum(c[5] for c in candles[-6:-1]) / 5
     big_red = is_bearish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT and c2[5] > avg_volume
     small_green_1 = (
         is_bullish(c1) and body_pct(c1) <= MAX_SMALL_BODY_PCT and
-        c1[4] < c2[2] - (c2[2] - c2[3]) * 0.3 and c1[5] < c2[5]
+        c1[4] < c2[2] - (c2[2] - c2[3]) * 0.3
     )
     small_green_0 = (
         is_bullish(c0) and body_pct(c0) <= MAX_SMALL_BODY_PCT and
-        c0[4] < c2[2] - (c2[2] - c2[3]) * 0.3 and c0[5] < c2[5]
+        c0[4] < c2[2] - (c2[2] - c2[3]) * 0.3
     )
-    volume_decreasing = c1[5] > c0[5]
-    return big_red and small_green_1 and small_green_0 and volume_decreasing
+    return big_red and small_green_1 and small_green_0
 
 # === SYMBOLS ===
 def get_symbols():
@@ -333,8 +387,8 @@ def check_tp():
                             dca_messages = trade.get('dca_messages', [])
 
                             # Check for DCA levels first
-                            ticker = exchange.fetch_ticker(sym)
-                            current_price = round_price(sym, ticker['last'])
+                            ticker = safe_fetch_ticker(exchange, sym)
+                            current_price = round_price(sym, ticker['last']) if ticker else None
                             if current_price:
                                 initial_entry = trade['initial_entry']
                                 adds_done = trade.get('adds_done', 0)
@@ -395,8 +449,8 @@ def check_tp():
 
                             # TP and SL check
                             if trade.get('adds_done', 0) == 0 and trade.get('last_update_time'):
-                                candles_1m = exchange.fetch_ohlcv(sym, '1m', since=trade['last_update_time'], limit=2880)
-                                for c in candles_1m:
+                                candles_1m = safe_fetch_ohlcv(exchange, sym, '1m', since=trade['last_update_time'], limit=2880)
+                                for c in candles_1m or []:
                                     high = c[2]
                                     low = c[3]
                                     if trade['side'] == 'buy':
@@ -458,7 +512,7 @@ def check_tp():
                                 }
                                 closed_trades.append(closed_trade)
                                 save_closed_trades(closed_trade)
-                                if len(closed_trades) > 100:  # Keep last 100 trades
+                                if len(closed_trades) > 100:
                                     closed_trades[:] = closed_trades[-100:]
                                 dca_lines = []
                                 for j, (against_pct, _) in enumerate(ADD_LEVELS):
@@ -505,18 +559,14 @@ def clean_sent_signals():
 
 def process_symbol(symbol, alert_queue):
     try:
-        for attempt in range(3):
-            try:
-                candles = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=30)
-                if len(candles) < 25:
-                    return
-                if attempt < 2 and candles[-1][0] > candles[-2][0]:
-                    break
-                time.sleep(0.5)
-            except ccxt.NetworkError as e:
-                print(f"Network error on {symbol}: {e}")
-                time.sleep(2 ** attempt)
-                continue
+        candles = safe_fetch_ohlcv(exchange, symbol, TIMEFRAME, 30)
+        if not candles or len(candles) < 25:
+            return
+        
+        # Wait for candle close
+        if candles[-1][0] > candles[-2][0]:
+            time.sleep(2)
+            return
 
         ema21 = calculate_ema(candles, period=21)
         ema9 = calculate_ema(candles, period=9)
@@ -616,17 +666,15 @@ def process_symbol(symbol, alert_queue):
             )
             alert_queue.put((symbol, msg, ema_status, category, side, entry_price, tp, first_candle_analysis['text'], first_candle_analysis['status'], first_candle_analysis['body_pct'], pattern, dca_status, sl))
 
-    except ccxt.RateLimitExceeded:
-        time.sleep(5)
     except Exception as e:
-        logging.error(f"Error on {symbol}: {e}")
+        logging.error(f"Process error {symbol}: {e}")
+        time.sleep(2)
 
-# === PROCESS BATCH ===
+# === ULTRA-SAFE BATCH PROCESSING ===
 def process_batch(symbols, alert_queue):
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_symbol = {executor.submit(process_symbol, symbol, alert_queue): symbol for symbol in symbols}
-        for future in as_completed(future_to_symbol):
-            future.result()
+    for symbol in symbols:
+        process_symbol(symbol, alert_queue)
+        time.sleep(BATCH_DELAY / len(symbols))  # Distribute delay
 
 # === SCAN LOOP ===
 def scan_loop():
@@ -635,7 +683,12 @@ def scan_loop():
         global closed_trades, last_summary_time
         load_trades()
         symbols = get_symbols()
-        print(f"🔍 Scanning {len(symbols)} Binance Futures symbols...")
+        logging.info(f"🔍 Scanning {len(symbols)} symbols SAFELY...")
+        
+        # Split into TINY batches
+        batch_size = SYMBOLS_PER_BATCH
+        batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
+        
         alert_queue = queue.Queue()
 
         def send_alerts():
@@ -743,18 +796,19 @@ def scan_loop():
             clean_sent_signals()
             next_close = get_next_candle_close()
             wait_time = max(0, next_close - time.time())
-            print(f"⏳ Waiting {wait_time:.1f} seconds for next 15m candle close...")
+            logging.info(f"⏳ Waiting {wait_time:.1f}s for candle...")
             time.sleep(wait_time)
 
-            for i, chunk in enumerate([symbols[i:i + math.ceil(len(symbols) / NUM_CHUNKS)] for i in range(0, len(symbols), math.ceil(len(symbols) / NUM_CHUNKS))]):
-                print(f"Processing batch {i+1}/{NUM_CHUNKS}...")
-                process_batch(chunk, alert_queue)
-                if i < NUM_CHUNKS - 1:
-                    time.sleep(BATCH_DELAY)
+            # Process TINY batches with LONG delays
+            for i, batch in enumerate(batches):
+                logging.info(f"Batch {i+1}/{len(batches)} ({len(batch)} symbols)")
+                process_batch(batch, alert_queue)
+                if i < len(batches) - 1:
+                    time.sleep(BATCH_DELAY * 2)  # Double delay between batches
 
-            print("✅ Scan complete.")
+            logging.info("✅ Scan complete")
             num_open = len(open_trades)
-            print(f"📊 Number of open trades: {num_open}")
+            logging.info(f"📊 Number of open trades: {num_open}")
 
             current_time = time.time()
             if current_time - last_summary_time >= SUMMARY_INTERVAL:
