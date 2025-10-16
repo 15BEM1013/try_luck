@@ -102,7 +102,6 @@ open_trades = {}
 closed_trades = []
 sent_signals = {}
 active_threads = {}
-last_summary_time = 0
 app = Flask(__name__)
 
 # === TIME ZONE HELPER ===
@@ -465,13 +464,19 @@ def process_symbol(symbol, alert_queue):
     except Exception as e:
         logging.error(f"Process error {symbol}: {e}")
 
-# === SCAN LOOP (UPDATED) ===
+# === SCAN LOOP (🚨 FIXED!) ===
 def scan_loop():
     active_threads['scan_loop'] = True
     try:
         load_trades()
         symbols = get_symbols()
         alert_queue = queue.Queue()
+        
+        # 🔥 THE 1-LINE FIX THAT SAVES YOUR TRADES!
+        global last_summary_time
+        if last_summary_time == 0:
+            last_summary_time = time.time()
+            print("🚀 FIXED: last_summary_time initialized!")
         
         def send_alerts():
             active_threads['send_alerts'] = True
@@ -495,11 +500,14 @@ def scan_loop():
                                 }
                                 open_trades[symbol] = trade
                                 save_trades()
+                                print(f"💰 NEW TRADE: {symbol} {side}")  # DEBUG
                 except queue.Empty:
                     time.sleep(1)
         
         threading.Thread(target=send_alerts, daemon=True).start()
         threading.Thread(target=check_tp, daemon=True).start()
+        
+        print("🚀 SCAN LOOP STARTED - TRADES LIVE!")  # DEBUG
         
         while True:
             next_close = time.time() + ((15 * 60) - (time.time() % (15 * 60)))
@@ -511,12 +519,15 @@ def scan_loop():
                 if i < len([symbols[i:i+SYMBOLS_PER_BATCH] for i in range(0, len(symbols), SYMBOLS_PER_BATCH)]) - 1:
                     time.sleep(BATCH_DELAY)
             
+            # ✅ NOW SAFE - NO CRASH!
             if time.time() - last_summary_time >= SUMMARY_INTERVAL:
+                print("📊 SENDING SUMMARY")  # DEBUG
                 send_telegram(get_compact_summary())
                 last_summary_time = time.time()
                 
     except Exception as e:
         active_threads['scan_loop'] = False
+        print(f"🚨 Scan Error: {e}")  # DEBUG
         send_telegram(f"🚨 Scan Crashed: {e}")
 
 # === FLASK ===
@@ -530,7 +541,8 @@ def health():
 # === RUN ===
 def run_bot():
     global last_summary_time
-    last_summary_time = time.time()
+    last_summary_time = time.time()  # ✅ SAFE INITIALIZE
+    print("🚀 BOT STARTING - TRADES WILL WORK!")
     send_telegram(f"BOT STARTED | OPEN: {len(open_trades)}")
     threading.Thread(target=scan_loop, daemon=True).start()
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8080)))
