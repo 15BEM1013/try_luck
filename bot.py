@@ -27,7 +27,7 @@ NUM_CHUNKS = 8
 CAPITAL = 20.0
 LEVERAGE = 5
 TP_PCT = 1.0 / 100
-SL_PCT = 6.0 / 100  # Added stop-loss percentage
+SL_PCT = 6.0 / 100  # Original stop-loss percentage
 TP_CHECK_INTERVAL = 30
 TRADE_FILE = 'open_trades.json'
 CLOSED_TRADE_FILE = 'closed_trades.json'
@@ -42,7 +42,7 @@ RSI_OVERBOUGHT = 80
 RSI_OVERSOLD = 30
 BODY_SIZE_THRESHOLD = 0.1
 SUMMARY_INTERVAL = 3600
-ADD_LEVELS = [(0.015, 5.0), (0.03, 10.0), (0.045, 15.0)]  # (against_pct, additional_dollar_amount)
+ADD_LEVELS = [(0.015, 5.0), (0.03, 10.0), (0.045, 0.0)]  # DCA3: (against_pct, 0.0 amount - acts as SL)
 ACCOUNT_SIZE = 1000.0
 MAX_RISK_PCT = 4.5 / 100
 
@@ -323,7 +323,7 @@ def check_tp():
                         current_price = None
                         dca_messages = trade.get('dca_messages', [])
 
-                        # Check for DCA levels first
+                        # Check for DCA levels first (only levels 0 and 1 - DCA3 is SL)
                         ticker = exchange.fetch_ticker(sym)
                         current_price = round_price(sym, ticker['last'])
                         if current_price:
@@ -333,7 +333,8 @@ def check_tp():
                             average_entry = trade.get('average_entry', initial_entry)
                             quantity = trade.get('quantity', total_invested / initial_entry)
 
-                            for i, (against_pct, add_amount) in enumerate(ADD_LEVELS):
+                            # Only check DCA levels 0 and 1 (DCA3 is SL - index 2)
+                            for i, (against_pct, add_amount) in enumerate(ADD_LEVELS[:2]):  # Only first 2 levels
                                 if adds_done > i:
                                     continue  # Skip levels already added
                                 dca_triggered = False
@@ -367,9 +368,13 @@ def check_tp():
                                     # Update Telegram message
                                     dca_lines = []
                                     for j, (against_pct, _) in enumerate(ADD_LEVELS):
-                                        dca_price = round_price(sym, initial_entry * (1 - against_pct) if trade['side'] == 'buy' else initial_entry * (1 + against_pct))
-                                        dca_tp = round_price(sym, dca_price * (1 + TP_PCT) if trade['side'] == 'buy' else dca_price * (1 - TP_PCT))
-                                        dca_lines.append(f"DCA {j+1} {dca_price} tp-{dca_tp} ({trade['dca_status'][j]})")
+                                        if j < 2:  # DCA 1 & 2
+                                            dca_price = round_price(sym, initial_entry * (1 - against_pct) if trade['side'] == 'buy' else initial_entry * (1 + against_pct))
+                                            dca_tp = round_price(sym, dca_price * (1 + TP_PCT) if trade['side'] == 'buy' else dca_price * (1 - TP_PCT))
+                                            dca_lines.append(f"DCA {j+1} {dca_price} tp-{dca_tp} ({trade['dca_status'][j]})")
+                                        else:  # DCA3 - SL
+                                            dca_price = round_price(sym, initial_entry * (1 - against_pct) if trade['side'] == 'buy' else initial_entry * (1 + against_pct))
+                                            dca_lines.append(f"DCA3/SL {dca_price} ({trade['dca_status'][j]})")
                                     new_msg = (
                                         f"{sym} - {'BUY' if trade['side'] == 'buy' else 'SELL'}\n"
                                         f"Initial entry: {trade['initial_entry']}\n"
@@ -385,8 +390,26 @@ def check_tp():
                                     save_trades()
                                     break
 
-                        # TP and SL check: Use historical candles only if no DCA has occurred, else use current price
-                        if trade.get('adds_done', 0) == 0 and trade.get('last_update_time'):
+                            # Check DCA3 as Stop Loss (index 2)
+                            if adds_done < 2:  # Only check DCA3 SL if DCA1 & DCA2 not triggered
+                                against_pct, _ = ADD_LEVELS[2]
+                                dca3_sl_triggered = False
+                                dca3_price = None
+                                if trade['side'] == 'buy' and current_price <= initial_entry * (1 - against_pct):
+                                    dca3_price = current_price
+                                    dca3_sl_triggered = True
+                                elif trade['side'] == 'sell' and current_price >= initial_entry * (1 + against_pct):
+                                    dca3_price = current_price
+                                    dca3_sl_triggered = True
+                                
+                                if dca3_sl_triggered:
+                                    hit = "DCA3 SL hit"
+                                    hit_price = dca3_price
+                                    trade['dca_status'][2] = "🔴"
+                                    logging.info(f"DCA3 SL triggered for {sym} at {dca3_price}")
+
+                        # TP check: Use historical candles only if no DCA has occurred, else use current price
+                        if not hit and trade.get('adds_done', 0) == 0 and trade.get('last_update_time'):
                             candles_1m = exchange.fetch_ohlcv(sym, '1m', since=trade['last_update_time'], limit=2880)
                             for c in candles_1m:
                                 high = c[2]
@@ -396,32 +419,29 @@ def check_tp():
                                         hit = "TP hit"
                                         hit_price = high
                                         break
-                                    elif low <= trade['sl']:
-                                        hit = "SL hit"
-                                        hit_price = low
-                                        break
                                 else:
                                     if low <= trade['tp']:
                                         hit = "TP hit"
                                         hit_price = low
-                                        break
-                                    elif high >= trade['sl']:
-                                        hit = "SL hit"
-                                        hit_price = high
                                         break
                         if not hit and current_price:
                             if trade['side'] == 'buy':
                                 if current_price >= trade['tp']:
                                     hit = "TP hit"
                                     hit_price = current_price
-                                elif current_price <= trade['sl']:
-                                    hit = "SL hit"
-                                    hit_price = current_price
                             else:
                                 if current_price <= trade['tp']:
                                     hit = "TP hit"
                                     hit_price = current_price
-                                elif current_price >= trade['sl']:
+
+                        # Original SL check (only if DCA3 SL not triggered)
+                        if not hit and current_price:
+                            if trade['side'] == 'buy':
+                                if current_price <= trade['sl']:
+                                    hit = "SL hit"
+                                    hit_price = current_price
+                            else:
+                                if current_price >= trade['sl']:
                                     hit = "SL hit"
                                     hit_price = current_price
 
@@ -452,9 +472,13 @@ def check_tp():
                             save_closed_trades(closed_trade)
                             dca_lines = []
                             for j, (against_pct, _) in enumerate(ADD_LEVELS):
-                                dca_price = round_price(sym, trade['initial_entry'] * (1 - against_pct) if trade['side'] == 'buy' else trade['initial_entry'] * (1 + against_pct))
-                                dca_tp = round_price(sym, dca_price * (1 + TP_PCT) if trade['side'] == 'buy' else dca_price * (1 - TP_PCT))
-                                dca_lines.append(f"DCA {j+1} {dca_price} tp-{dca_tp} ({trade['dca_status'][j]})")
+                                if j < 2:  # DCA 1 & 2
+                                    dca_price = round_price(sym, trade['initial_entry'] * (1 - against_pct) if trade['side'] == 'buy' else trade['initial_entry'] * (1 + against_pct))
+                                    dca_tp = round_price(sym, dca_price * (1 + TP_PCT) if trade['side'] == 'buy' else dca_price * (1 - TP_PCT))
+                                    dca_lines.append(f"DCA {j+1} {dca_price} tp-{dca_tp} ({trade['dca_status'][j]})")
+                                else:  # DCA3 - SL
+                                    dca_price = round_price(sym, trade['initial_entry'] * (1 - against_pct) if trade['side'] == 'buy' else trade['initial_entry'] * (1 + against_pct))
+                                    dca_lines.append(f"DCA3/SL {dca_price} ({trade['dca_status'][j]})")
                             new_msg = (
                                 f"{sym} - {'BUY' if trade['side'] == 'buy' else 'SELL'}\n"
                                 f"Initial entry: {trade['initial_entry']}\n"
@@ -532,14 +556,17 @@ def process_symbol(symbol, alert_queue):
             tp = round_price(symbol, entry_price * (1 - TP_PCT))
             sl = round_price(symbol, entry_price * (1 + SL_PCT))
             pattern = 'rising'
-            # Calculate DCA levels and their TPs
+            # Calculate DCA levels and their TPs (DCA3 as SL)
             dca_lines = []
-            dca_status = {}
+            dca_status = {0: "Pending", 1: "Pending", 2: "Pending"}
             for i, (against_pct, _) in enumerate(ADD_LEVELS):
-                dca_price = round_price(symbol, entry_price * (1 + against_pct))
-                dca_tp = round_price(symbol, dca_price * (1 - TP_PCT))
-                dca_status[i] = "Pending"
-                dca_lines.append(f"DCA {i+1} {dca_price} tp-{dca_tp} (Pending)")
+                if i < 2:  # DCA 1 & 2
+                    dca_price = round_price(symbol, entry_price * (1 + against_pct))
+                    dca_tp = round_price(symbol, dca_price * (1 - TP_PCT))
+                    dca_lines.append(f"DCA {i+1} {dca_price} tp-{dca_tp} (Pending)")
+                else:  # DCA3 - SL
+                    dca_price = round_price(symbol, entry_price * (1 + against_pct))
+                    dca_lines.append(f"DCA3/SL {dca_price} (Pending)")
             msg = (
                 f"{symbol} - SELL\n"
                 f"Initial entry: {entry_price}\n"
@@ -577,14 +604,17 @@ def process_symbol(symbol, alert_queue):
             tp = round_price(symbol, entry_price * (1 + TP_PCT))
             sl = round_price(symbol, entry_price * (1 - SL_PCT))
             pattern = 'falling'
-            # Calculate DCA levels and their TPs
+            # Calculate DCA levels and their TPs (DCA3 as SL)
             dca_lines = []
-            dca_status = {}
+            dca_status = {0: "Pending", 1: "Pending", 2: "Pending"}
             for i, (against_pct, _) in enumerate(ADD_LEVELS):
-                dca_price = round_price(symbol, entry_price * (1 - against_pct))
-                dca_tp = round_price(symbol, dca_price * (1 + TP_PCT))
-                dca_status[i] = "Pending"
-                dca_lines.append(f"DCA {i+1} {dca_price} tp-{dca_tp} (Pending)")
+                if i < 2:  # DCA 1 & 2
+                    dca_price = round_price(symbol, entry_price * (1 - against_pct))
+                    dca_tp = round_price(symbol, dca_price * (1 + TP_PCT))
+                    dca_lines.append(f"DCA {i+1} {dca_price} tp-{dca_tp} (Pending)")
+                else:  # DCA3 - SL
+                    dca_price = round_price(symbol, entry_price * (1 - against_pct))
+                    dca_lines.append(f"DCA3/SL {dca_price} (Pending)")
             msg = (
                 f"{symbol} - BUY\n"
                 f"Initial entry: {entry_price}\n"
@@ -748,7 +778,7 @@ def scan_loop():
                     wins = sum(1 for t in trade_list if t.get('pnl', 0) > 0)
                     losses = sum(1 for t in trade_list if t.get('pnl', 0) < 0)
                     tp_hits = sum(1 for t in trade_list if t.get('hit') == 'TP hit')
-                    sl_hits = sum(1 for t in trade_list if t.get('hit') == 'SL hit')
+                    sl_hits = sum(1 for t in trade_list if 'SL' in t.get('hit', ''))
                     pnl = sum(t.get('pnl', 0) for t in trade_list)
                     pnl_pct = sum(t.get('pnl_pct', 0) for t in trade_list)
                     win_rate = (wins / count * 100) if count > 0 else 0.00
