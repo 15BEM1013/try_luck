@@ -1,4 +1,4 @@
-```python
+
 import ccxt.pro as ccxt  # Use pro for WS
 import asyncio
 import time
@@ -749,4 +749,4 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
-```
+
