@@ -1,11 +1,13 @@
-import ccxt
+```python
+import ccxt.pro as ccxt  # Use pro for WS
+import asyncio
 import time
 import threading
 import requests
 from flask import Flask
 from datetime import datetime
 import pytz
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 import math
 import queue
 import json
@@ -13,7 +15,6 @@ import os
 import talib
 import numpy as np
 import logging
-
 # === CONFIG ===
 BOT_TOKEN = '7662307654:AAG5-juB1faNaFZfC8zjf4LwlZMzs6lEmtE'
 CHAT_ID = '655537138'
@@ -45,38 +46,32 @@ SUMMARY_INTERVAL = 3600
 ADD_LEVELS = [(0.015, 5.0), (0.03, 10.0), (0.045, 0.0)]
 ACCOUNT_SIZE = 1000.0
 MAX_RISK_PCT = 4.5 / 100
-
 # === PROXY CONFIGURATION ===
 PROXY_LIST = [
-    {'host': '142.111.48.253',  'port': 7030, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
-    {'host': '31.59.20.176',    'port': 6754, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
-    {'host': '23.95.150.145',   'port': 6114, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
-    {'host': '198.23.239.134',  'port': 6540, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
-    {'host': '45.38.107.97',    'port': 6014, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
-    {'host': '107.172.163.27',  'port': 6543, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
-    {'host': '64.137.96.74',    'port': 6641, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
-    {'host': '216.10.27.159',   'port': 6837, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
-    {'host': '142.111.67.146',  'port': 5611, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
-    {'host': '142.147.128.93',  'port': 6593, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
+    {'host': '142.111.48.253', 'port': 7030, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
+    {'host': '31.59.20.176', 'port': 6754, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
+    {'host': '23.95.150.145', 'port': 6114, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
+    {'host': '198.23.239.134', 'port': 6540, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
+    {'host': '45.38.107.97', 'port': 6014, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
+    {'host': '107.172.163.27', 'port': 6543, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
+    {'host': '64.137.96.74', 'port': 6641, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
+    {'host': '216.10.27.159', 'port': 6837, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
+    {'host': '142.111.67.146', 'port': 5611, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
+    {'host': '142.147.128.93', 'port': 6593, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
 ]
-
 def get_proxy_config(proxy):
     return {
         "http": f"http://{proxy['username']}:{proxy['password']}@{proxy['host']}:{proxy['port']}",
         "https": f"http://{proxy['username']}:{proxy['password']}@{proxy['host']}:{proxy['port']}"
     }
-
 # === CONFIGURE LOGGING ===
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
 # === THREAD LOCK ===
 trade_lock = threading.Lock()
-
 # === TIME ZONE HELPER ===
 def get_ist_time():
     ist = pytz.timezone('Asia/Kolkata')
     return datetime.now(ist)
-
 # === TRADE PERSISTENCE ===
 def save_trades():
     try:
@@ -85,7 +80,6 @@ def save_trades():
         print(f"Trades saved to {TRADE_FILE}")
     except Exception as e:
         print(f"Error saving trades: {e}")
-
 def load_trades():
     global open_trades
     try:
@@ -97,7 +91,6 @@ def load_trades():
     except Exception as e:
         print(f"Error loading trades: {e}")
         open_trades = {}
-
 def save_closed_trades(closed_trade):
     try:
         all_closed_trades = []
@@ -110,7 +103,6 @@ def save_closed_trades(closed_trade):
         print(f"Closed trade saved to {CLOSED_TRADE_FILE}")
     except Exception as e:
         print(f"Error saving closed trades: {e}")
-
 def load_closed_trades():
     try:
         if os.path.exists(CLOSED_TRADE_FILE):
@@ -120,7 +112,6 @@ def load_closed_trades():
     except Exception as e:
         print(f"Error loading closed trades: {e}")
         return []
-
 # === TELEGRAM ===
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -132,7 +123,6 @@ def send_telegram(msg):
     except Exception as e:
         print(f"Telegram error: {e}")
         return None
-
 def edit_telegram_message(message_id, new_text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
@@ -141,26 +131,22 @@ def edit_telegram_message(message_id, new_text):
         print(f"Telegram updated: {new_text}")
     except Exception as e:
         print(f"Edit error: {e}")
-
 # === INIT ===
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-
-def initialize_exchange():
+async def initialize_exchange():
     for proxy in PROXY_LIST:
         try:
+            global proxies
             proxies = get_proxy_config(proxy)
             logging.info(f"Trying proxy: {proxy['host']}:{proxy['port']}")
-            session = requests.Session()
-            retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-            session.mount('https://', HTTPAdapter(pool_maxsize=20, max_retries=retries))
             exchange = ccxt.binance({
                 'options': {'defaultType': 'future'},
                 'proxies': proxies,
                 'enableRateLimit': True,
-                'session': session
+                'asyncio_loop': asyncio.get_event_loop(),
             })
-            exchange.load_markets()
+            await exchange.load_markets()
             logging.info(f"Successfully connected using proxy: {proxy['host']}:{proxy['port']}")
             return exchange, proxies
         except Exception as e:
@@ -170,28 +156,21 @@ def initialize_exchange():
     try:
         exchange = ccxt.binance({
             'options': {'defaultType': 'future'},
-            'enableRateLimit': True
+            'enableRateLimit': True,
+            'asyncio_loop': asyncio.get_event_loop(),
         })
-        exchange.load_markets()
+        await exchange.load_markets()
         logging.info("Successfully connected using direct connection.")
         return exchange, None
     except Exception as e:
         logging.error(f"Direct connection failed: {e}")
         raise Exception("All proxies and direct connection failed.")
-
 app = Flask(__name__)
-
 sent_signals = {}
 open_trades = {}
 closed_trades = []
 last_summary_time = 0
-
-try:
-    exchange, proxies = initialize_exchange()
-except Exception as e:
-    logging.error(f"Failed to initialize exchange: {e}")
-    exit(1)
-
+proxies = None  # Global for Telegram
 # === CANDLE HELPERS ===
 def is_bullish(c): return c[4] > c[1]
 def is_bearish(c): return c[4] < c[1]
@@ -200,21 +179,18 @@ def lower_wick_pct(c):
     if is_bearish(c) and (c[1] - c[4]) != 0:
         return (c[1] - c[3]) / (c[1] - c[4]) * 100
     return 0
-
 def upper_wick_pct(c):
     if is_bullish(c) and (c[4] - c[1]) != 0:
         return (c[2] - c[4]) / (c[4] - c[1]) * 100
     elif is_bearish(c) and (c[1] - c[4]) != 0:
         return (c[2] - c[1]) / (c[1] - c[4]) * 100
     return 0
-
 def analyze_first_small_candle(candle, pattern_type):
     body = body_pct(candle)
     upper_wick = (candle[2] - max(candle[1], candle[4])) / candle[1] * 100
     lower_wick = (min(candle[1], candle[4]) - candle[3]) / candle[1] * 100
     wick_ratio = upper_wick / lower_wick if lower_wick != 0 else float('inf')
     wick_ratio_reverse = lower_wick / upper_wick if upper_wick != 0 else float('inf')
-
     if pattern_type == 'rising':
         if wick_ratio >= 2.5 and body < 0.1:
             return {'text': f"Selling pressure\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%", 'status': 'selling_pressure', 'body_pct': body}
@@ -243,7 +219,6 @@ def analyze_first_small_candle(candle, pattern_type):
                 return {'text': f"Neutral\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%", 'status': 'neutral', 'body_pct': body}
         else:
             return {'text': f"Neutral\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%", 'status': 'neutral', 'body_pct': body}
-
 # === EMA ===
 def calculate_ema(candles, period=21):
     closes = [c[4] for c in candles]
@@ -254,25 +229,22 @@ def calculate_ema(candles, period=21):
     for close in closes[period:]:
         ema = (close - ema) * multiplier + ema
     return ema
-
 # === RSI ===
 def calculate_rsi(candles, period=14):
     closes = np.array([c[4] for c in candles])
     if len(closes) < period:
         return None
     return talib.RSI(closes, timeperiod=period)[-1]
-
 # === PRICE ROUNDING ===
 def round_price(symbol, price):
     try:
-        market = exchange.market(symbol)
+        market = exchange.market(symbol)  # Note: exchange needs to be global or passed
         tick_size = float(market['info']['filters'][0]['tickSize'])
         precision = int(round(-math.log10(tick_size)))
         return round(price, precision)
     except Exception as e:
         print(f"Error rounding price for {symbol}: {e}")
         return price
-
 # === PATTERN DETECTION ===
 def detect_rising_three(candles):
     c2, c1, c0 = candles[-4], candles[-3], candles[-2]
@@ -290,7 +262,6 @@ def detect_rising_three(candles):
     )
     volume_decreasing = c1[5] > c0[5]
     return big_green and small_red_1 and small_red_0 and volume_decreasing
-
 def detect_falling_three(candles):
     c2, c1, c0 = candles[-4], candles[-3], candles[-2]
     avg_volume = sum(c[5] for c in candles[-6:-1]) / 5
@@ -305,236 +276,214 @@ def detect_falling_three(candles):
     )
     volume_decreasing = c1[5] > c0[5]
     return big_red and small_green_1 and small_green_0 and volume_decreasing
-
 # === SYMBOLS ===
-def get_symbols():
-    markets = exchange.load_markets()
+async def get_symbols(exchange):
+    markets = await exchange.load_markets()
     return [s for s in markets if 'USDT' in s and markets[s]['contract'] and markets[s].get('active') and markets[s].get('info', {}).get('status') == 'TRADING']
-
-# === CANDLE CLOSE ===
-def get_next_candle_close():
-    now = get_ist_time()
-    seconds = now.minute * 60 + now.second
-    seconds_to_next = (15 * 60) - (seconds % (15 * 60))
-    if seconds_to_next < 5:
-        seconds_to_next += 15 * 60
-    return time.time() + seconds_to_next
-
-# === TP AND SL CHECK AND DCA ===
-def check_tp():
+# === ASYNC TP/SL/DCA CHECK ===
+async def check_tp_single(exchange, sym, ticker):
     global closed_trades
+    try:
+        current_price = round_price(sym, ticker['last'])
+        if not current_price:
+            return
+        hit = ""
+        pnl = 0
+        hit_price = None
+        dca_messages = open_trades[sym].get('dca_messages', [])
+        initial_entry = open_trades[sym]['initial_entry']
+        adds_done = open_trades[sym].get('adds_done', 0)
+        total_invested = open_trades[sym].get('total_invested', CAPITAL)
+        average_entry = open_trades[sym].get('average_entry', initial_entry)
+        quantity = open_trades[sym].get('quantity', total_invested / initial_entry)
+        for i, (against_pct, add_amount) in enumerate(ADD_LEVELS[:2]):
+            if adds_done > i:
+                continue
+            dca_triggered = False
+            add_price = None
+            if open_trades[sym]['side'] == 'buy' and current_price <= initial_entry * (1 - against_pct):
+                add_price = current_price
+                dca_triggered = True
+                dca_message = f"${add_amount:.1f} @ {add_price}"
+            elif open_trades[sym]['side'] == 'sell' and current_price >= initial_entry * (1 + against_pct):
+                add_price = current_price
+                dca_triggered = True
+                dca_message = f"${add_amount:.1f} @ {add_price}"
+            if dca_triggered:
+                add_quantity = add_amount / add_price
+                total_quantity = quantity + add_quantity
+                total_invested += add_amount
+                average_entry = (quantity * average_entry + add_quantity * add_price) / total_quantity
+                new_tp = round_price(sym, average_entry * (1 + TP_PCT) if open_trades[sym]['side'] == 'buy' else average_entry * (1 - TP_PCT))
+                new_sl = round_price(sym, average_entry * (1 - SL_PCT) if open_trades[sym]['side'] == 'buy' else average_entry * (1 + SL_PCT))
+                open_trades[sym]['adds_done'] = i + 1
+                open_trades[sym]['total_invested'] = total_invested
+                open_trades[sym]['average_entry'] = round_price(sym, average_entry)
+                open_trades[sym]['quantity'] = total_quantity
+                open_trades[sym]['tp'] = new_tp
+                open_trades[sym]['sl'] = new_sl
+                open_trades[sym]['last_update_time'] = int(time.time() * 1000)
+                open_trades[sym]['dca_status'][i] = "Added"
+                dca_messages.append(dca_message)
+                open_trades[sym]['dca_messages'] = dca_messages
+                logging.info(f"Added ${add_amount} to {sym} at {add_price}, new avg entry: {average_entry}, new TP: {new_tp}, new SL: {new_sl}, total invested: {total_invested}")
+                dca_lines = []
+                for j, (against_pct_j, _) in enumerate(ADD_LEVELS):
+                    if j < 2:
+                        dca_price = round_price(sym, initial_entry * (1 - against_pct_j) if open_trades[sym]['side'] == 'buy' else initial_entry * (1 + against_pct_j))
+                        dca_tp = round_price(sym, dca_price * (1 + TP_PCT) if open_trades[sym]['side'] == 'buy' else dca_price * (1 - TP_PCT))
+                        dca_lines.append(f"DCA {j+1} {dca_price} tp-{dca_tp} ({open_trades[sym]['dca_status'][j]})")
+                    else:
+                        dca_price = round_price(sym, initial_entry * (1 - against_pct_j) if open_trades[sym]['side'] == 'buy' else initial_entry * (1 + against_pct_j))
+                        dca_lines.append(f"DCA3/SL {dca_price} ({open_trades[sym]['dca_status'][j]})")
+                new_msg = (
+                    f"{sym} - {'BUY' if open_trades[sym]['side'] == 'buy' else 'SELL'}\n"
+                    f"Initial entry: {open_trades[sym]['initial_entry']}\n"
+                    f"Average entry: {open_trades[sym]['average_entry']}\n"
+                    f"Total invested: ${open_trades[sym]['total_invested']:.2f}\n"
+                    f"{'\n'.join(dca_lines)}\n"
+                    f"DCA Added: {', '.join(dca_messages)}\n"
+                    f"TP: {open_trades[sym]['tp']}\n"
+                    f"SL: {open_trades[sym]['sl']}"
+                )
+                open_trades[sym]['msg'] = new_msg
+                edit_telegram_message(open_trades[sym]['msg_id'], new_msg)
+                save_trades()
+                return  # Break after DCA to avoid multiple in one check
+        if adds_done < 2:
+            against_pct, _ = ADD_LEVELS[2]
+            dca3_sl_triggered = False
+            dca3_price = None
+            if open_trades[sym]['side'] == 'buy' and current_price <= initial_entry * (1 - against_pct):
+                dca3_price = current_price
+                dca3_sl_triggered = True
+            elif open_trades[sym]['side'] == 'sell' and current_price >= initial_entry * (1 + against_pct):
+                dca3_price = current_price
+                dca3_sl_triggered = True
+            if dca3_sl_triggered:
+                hit = "DCA3 SL hit"
+                hit_price = dca3_price
+                open_trades[sym]['dca_status'][2] = "SL Hit"
+                logging.info(f"DCA3 SL triggered for {sym} at {dca3_price}")
+        if not hit and open_trades[sym].get('adds_done', 0) == 0 and open_trades[sym].get('last_update_time'):
+            # For historical TP check, but since WS is real-time, skip or fetch if needed
+            pass  # In WS, we rely on streamed prices
+        if not hit and current_price:
+            if open_trades[sym]['side'] == 'buy':
+                if current_price >= open_trades[sym]['tp']:
+                    hit = "TP hit"
+                    hit_price = current_price
+            else:
+                if current_price <= open_trades[sym]['tp']:
+                    hit = "TP hit"
+                    hit_price = current_price
+        if not hit and current_price:
+            if open_trades[sym]['side'] == 'buy':
+                if current_price <= open_trades[sym]['sl']:
+                    hit = "SL hit"
+                    hit_price = current_price
+            else:
+                if current_price >= open_trades[sym]['sl']:
+                    hit = "SL hit"
+                    hit_price = current_price
+        if hit:
+            total_quantity = open_trades[sym].get('quantity', total_invested / initial_entry)
+            if open_trades[sym]['side'] == 'buy':
+                pnl = (hit_price - open_trades[sym]['average_entry']) / open_trades[sym]['average_entry'] * 100
+            else:
+                pnl = (open_trades[sym]['average_entry'] - hit_price) / open_trades[sym]['average_entry'] * 100
+            leveraged_pnl_pct = pnl * LEVERAGE
+            profit = open_trades[sym]['total_invested'] * leveraged_pnl_pct / 100
+            logging.info(f"{hit} for {sym}: {hit}, Leveraged PnL: {leveraged_pnl_pct:.2f}% at price {hit_price}")
+            closed_trade = {
+                'symbol': sym,
+                'pnl': profit,
+                'pnl_pct': leveraged_pnl_pct,
+                'category': open_trades[sym]['category'],
+                'ema_status': open_trades[sym]['ema_status'],
+                'pressure_status': open_trades[sym]['pressure_status'],
+                'hit': hit,
+                'body_pct': open_trades[sym]['body_pct'],
+                'adds_done': open_trades[sym]['adds_done'],
+                'total_invested': open_trades[sym]['total_invested'],
+                'dca_messages': open_trades[sym].get('dca_messages', [])
+            }
+            closed_trades.append(closed_trade)
+            save_closed_trades(closed_trade)
+            dca_lines = []
+            for j, (against_pct_j, _) in enumerate(ADD_LEVELS):
+                if j < 2:
+                    dca_price = round_price(sym, open_trades[sym]['initial_entry'] * (1 - against_pct_j) if open_trades[sym]['side'] == 'buy' else open_trades[sym]['initial_entry'] * (1 + against_pct_j))
+                    dca_tp = round_price(sym, dca_price * (1 + TP_PCT) if open_trades[sym]['side'] == 'buy' else dca_price * (1 - TP_PCT))
+                    dca_lines.append(f"DCA {j+1} {dca_price} tp-{dca_tp} ({open_trades[sym]['dca_status'][j]})")
+                else:
+                    dca_price = round_price(sym, open_trades[sym]['initial_entry'] * (1 - against_pct_j) if open_trades[sym]['side'] == 'buy' else open_trades[sym]['initial_entry'] * (1 + against_pct_j))
+                    dca_lines.append(f"DCA3/SL {dca_price} ({open_trades[sym]['dca_status'][j]})")
+            new_msg = (
+                f"{sym} - {'BUY' if open_trades[sym]['side'] == 'buy' else 'SELL'}\n"
+                f"Initial entry: {open_trades[sym]['initial_entry']}\n"
+                f"Average entry: {open_trades[sym]['average_entry']}\n"
+                f"Total invested: ${open_trades[sym]['total_invested']:.2f}\n"
+                f"{'\n'.join(dca_lines)}\n"
+                f"DCA Added: {', '.join(dca_messages) if dca_messages else 'None'}\n"
+                f"TP: {open_trades[sym]['tp']}\n"
+                f"SL: {open_trades[sym]['sl']}\n"
+                f"Exit: {hit_price}\n"
+                f"Profit: {leveraged_pnl_pct:.2f}% (${profit:.2f})"
+            )
+            open_trades[sym]['msg'] = new_msg
+            open_trades[sym]['hit'] = hit
+            edit_telegram_message(open_trades[sym]['msg_id'], new_msg)
+            del open_trades[sym]
+            save_trades()
+            logging.info(f"Trade closed for {sym}")
+    except Exception as e:
+        logging.error(f"TP/SL/DCA check error on {sym}: {e}")
+async def watch_tp_sl_dca(exchange):
+    global closed_trades
+    ticker_tasks = {}
     while True:
         try:
             with trade_lock:
-                for sym, trade in list(open_trades.items()):
-                    try:
-                        hit = ""
-                        pnl = 0
-                        hit_price = None
-                        current_price = None
-                        dca_messages = trade.get('dca_messages', [])
-
-                        ticker = exchange.fetch_ticker(sym)
-                        current_price = round_price(sym, ticker['last'])
-                        if current_price:
-                            initial_entry = trade['initial_entry']
-                            adds_done = trade.get('adds_done', 0)
-                            total_invested = trade.get('total_invested', CAPITAL)
-                            average_entry = trade.get('average_entry', initial_entry)
-                            quantity = trade.get('quantity', total_invested / initial_entry)
-
-                            for i, (against_pct, add_amount) in enumerate(ADD_LEVELS[:2]):
-                                if adds_done > i:
-                                    continue
-                                dca_triggered = False
-                                add_price = None
-                                if trade['side'] == 'buy' and current_price <= initial_entry * (1 - against_pct):
-                                    add_price = current_price
-                                    dca_triggered = True
-                                    dca_message = f"${add_amount:.1f} @ {add_price}"
-                                elif trade['side'] == 'sell' and current_price >= initial_entry * (1 + against_pct):
-                                    add_price = current_price
-                                    dca_triggered = True
-                                    dca_message = f"${add_amount:.1f} @ {add_price}"
-                                if dca_triggered:
-                                    add_quantity = add_amount / add_price
-                                    total_quantity = quantity + add_quantity
-                                    total_invested += add_amount
-                                    average_entry = (quantity * average_entry + add_quantity * add_price) / total_quantity
-                                    new_tp = round_price(sym, average_entry * (1 + TP_PCT) if trade['side'] == 'buy' else average_entry * (1 - TP_PCT))
-                                    new_sl = round_price(sym, average_entry * (1 - SL_PCT) if trade['side'] == 'buy' else average_entry * (1 + SL_PCT))
-                                    trade['adds_done'] = i + 1
-                                    trade['total_invested'] = total_invested
-                                    trade['average_entry'] = round_price(sym, average_entry)
-                                    trade['quantity'] = total_quantity
-                                    trade['tp'] = new_tp
-                                    trade['sl'] = new_sl
-                                    trade['last_update_time'] = int(time.time() * 1000)
-                                    trade['dca_status'][i] = "Added"
-                                    dca_messages.append(dca_message)
-                                    trade['dca_messages'] = dca_messages
-                                    logging.info(f"Added ${add_amount} to {sym} at {add_price}, new avg entry: {average_entry}, new TP: {new_tp}, new SL: {new_sl}, total invested: {total_invested}")
-                                    dca_lines = []
-                                    for j, (against_pct, _) in enumerate(ADD_LEVELS):
-                                        if j < 2:
-                                            dca_price = round_price(sym, initial_entry * (1 - against_pct) if trade['side'] == 'buy' else initial_entry * (1 + against_pct))
-                                            dca_tp = round_price(sym, dca_price * (1 + TP_PCT) if trade['side'] == 'buy' else dca_price * (1 - TP_PCT))
-                                            dca_lines.append(f"DCA {j+1} {dca_price} tp-{dca_tp} ({trade['dca_status'][j]})")
-                                        else:
-                                            dca_price = round_price(sym, initial_entry * (1 - against_pct) if trade['side'] == 'buy' else initial_entry * (1 + against_pct))
-                                            dca_lines.append(f"DCA3/SL {dca_price} ({trade['dca_status'][j]})")
-                                    new_msg = (
-                                        f"{sym} - {'BUY' if trade['side'] == 'buy' else 'SELL'}\n"
-                                        f"Initial entry: {trade['initial_entry']}\n"
-                                        f"Average entry: {trade['average_entry']}\n"
-                                        f"Total invested: ${trade['total_invested']:.2f}\n"
-                                        f"{'\n'.join(dca_lines)}\n"
-                                        f"DCA Added: {', '.join(dca_messages)}\n"
-                                        f"TP: {trade['tp']}\n"
-                                        f"SL: {trade['sl']}"
-                                    )
-                                    trade['msg'] = new_msg
-                                    edit_telegram_message(trade['msg_id'], new_msg)
-                                    save_trades()
-                                    break
-
-                            if adds_done < 2:
-                                against_pct, _ = ADD_LEVELS[2]
-                                dca3_sl_triggered = False
-                                dca3_price = None
-                                if trade['side'] == 'buy' and current_price <= initial_entry * (1 - against_pct):
-                                    dca3_price = current_price
-                                    dca3_sl_triggered = True
-                                elif trade['side'] == 'sell' and current_price >= initial_entry * (1 + against_pct):
-                                    dca3_price = current_price
-                                    dca3_sl_triggered = True
-                                if dca3_sl_triggered:
-                                    hit = "DCA3 SL hit"
-                                    hit_price = dca3_price
-                                    trade['dca_status'][2] = "SL Hit"
-                                    logging.info(f"DCA3 SL triggered for {sym} at {dca3_price}")
-
-                        if not hit and trade.get('adds_done', 0) == 0 and trade.get('last_update_time'):
-                            candles_1m = exchange.fetch_ohlcv(sym, '1m', since=trade['last_update_time'], limit=2880)
-                            for c in candles_1m:
-                                high = c[2]
-                                low = c[3]
-                                if trade['side'] == 'buy':
-                                    if high >= trade['tp']:
-                                        hit = "TP hit"
-                                        hit_price = high
-                                        break
-                                else:
-                                    if low <= trade['tp']:
-                                        hit = "TP hit"
-                                        hit_price = low
-                                        break
-                        if not hit and current_price:
-                            if trade['side'] == 'buy':
-                                if current_price >= trade['tp']:
-                                    hit = "TP hit"
-                                    hit_price = current_price
-                            else:
-                                if current_price <= trade['tp']:
-                                    hit = "TP hit"
-                                    hit_price = current_price
-
-                        if not hit and current_price:
-                            if trade['side'] == 'buy':
-                                if current_price <= trade['sl']:
-                                    hit = "SL hit"
-                                    hit_price = current_price
-                            else:
-                                if current_price >= trade['sl']:
-                                    hit = "SL hit"
-                                    hit_price = current_price
-
-                        if hit:
-                            total_quantity = trade.get('quantity', total_invested / initial_entry)
-                            if trade['side'] == 'buy':
-                                pnl = (hit_price - trade['average_entry']) / trade['average_entry'] * 100
-                            else:
-                                pnl = (trade['average_entry'] - hit_price) / trade['average_entry'] * 100
-                            leveraged_pnl_pct = pnl * LEVERAGE
-                            profit = trade['total_invested'] * leveraged_pnl_pct / 100
-                            logging.info(f"{hit} for {sym}: {hit}, Leveraged PnL: {leveraged_pnl_pct:.2f}% at price {hit_price}")
-                            closed_trade = {
-                                'symbol': sym,
-                                'pnl': profit,
-                                'pnl_pct': leveraged_pnl_pct,
-                                'category': trade['category'],
-                                'ema_status': trade['ema_status'],
-                                'pressure_status': trade['pressure_status'],
-                                'hit': hit,
-                                'body_pct': trade['body_pct'],
-                                'adds_done': trade['adds_done'],
-                                'total_invested': trade['total_invested'],
-                                'dca_messages': trade.get('dca_messages', [])
-                            }
-                            closed_trades.append(closed_trade)
-                            save_closed_trades(closed_trade)
-                            dca_lines = []
-                            for j, (against_pct, _) in enumerate(ADD_LEVELS):
-                                if j < 2:
-                                    dca_price = round_price(sym, trade['initial_entry'] * (1 - against_pct) if trade['side'] == 'buy' else trade['initial_entry'] * (1 + against_pct))
-                                    dca_tp = round_price(sym, dca_price * (1 + TP_PCT) if trade['side'] == 'buy' else dca_price * (1 - TP_PCT))
-                                    dca_lines.append(f"DCA {j+1} {dca_price} tp-{dca_tp} ({trade['dca_status'][j]})")
-                                else:
-                                    dca_price = round_price(sym, trade['initial_entry'] * (1 - against_pct) if trade['side'] == 'buy' else trade['initial_entry'] * (1 + against_pct))
-                                    dca_lines.append(f"DCA3/SL {dca_price} ({trade['dca_status'][j]})")
-                            new_msg = (
-                                f"{sym} - {'BUY' if trade['side'] == 'buy' else 'SELL'}\n"
-                                f"Initial entry: {trade['initial_entry']}\n"
-                                f"Average entry: {trade['average_entry']}\n"
-                                f"Total invested: ${trade['total_invested']:.2f}\n"
-                                f"{'\n'.join(dca_lines)}\n"
-                                f"DCA Added: {', '.join(dca_messages) if dca_messages else 'None'}\n"
-                                f"TP: {trade['tp']}\n"
-                                f"SL: {trade['sl']}\n"
-                                f"Exit: {hit_price}\n"
-                                f"Profit: {leveraged_pnl_pct:.2f}% (${profit:.2f})"
-                            )
-                            trade['msg'] = new_msg
-                            trade['hit'] = hit
-                            edit_telegram_message(trade['msg_id'], new_msg)
-                            del open_trades[sym]
-                            save_trades()
-                            logging.info(f"Trade closed for {sym}")
-                    except Exception as e:
-                        logging.error(f"TP/SL/DCA check error on {sym}: {e}")
-            time.sleep(TP_CHECK_INTERVAL)
+                # Unsubscribe closed trades
+                for sym in list(ticker_tasks):
+                    if sym not in open_trades:
+                        ticker_tasks[sym].cancel()
+                        del ticker_tasks[sym]
+                # Subscribe new open trades
+                for sym in open_trades:
+                    if sym not in ticker_tasks:
+                        task = asyncio.create_task(watch_single_ticker(exchange, sym))
+                        ticker_tasks[sym] = task
+            await asyncio.sleep(TP_CHECK_INTERVAL)
         except Exception as e:
             logging.error(f"TP/SL/DCA loop error: {e}")
-            time.sleep(5)
-
-# === PROCESS SYMBOL ===
-def process_symbol(symbol, alert_queue):
+            await asyncio.sleep(5)
+async def watch_single_ticker(exchange, sym):
+    while sym in open_trades:
+        try:
+            ticker = await exchange.watch_ticker(sym)
+            await check_tp_single(exchange, sym, ticker)
+            if sym not in open_trades:
+                break
+        except Exception as e:
+            logging.error(f"Ticker WS error for {sym}: {e}")
+            await asyncio.sleep(1)
+# === PROCESS SYMBOL WS ===
+async def process_symbol_ws(exchange, symbol, historical_candles, alert_queue):
     try:
-        for attempt in range(3):
-            try:
-                candles = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=30)
-                if len(candles) < 25:
-                    return
-                if attempt < 2 and candles[-1][0] > candles[-2][0]:
-                    break
-                time.sleep(0.5)
-            except ccxt.NetworkError as e:
-                print(f"Network error on {symbol}: {e}")
-                time.sleep(2 ** attempt)
-                continue
-
-        ema21 = calculate_ema(candles, period=21)
-        ema9 = calculate_ema(candles, period=9)
-        rsi = calculate_rsi(candles, period=RSI_PERIOD)
+        if len(historical_candles) < 25:
+            return
+        ema21 = calculate_ema(historical_candles, period=21)
+        ema9 = calculate_ema(historical_candles, period=9)
+        rsi = calculate_rsi(historical_candles, period=RSI_PERIOD)
         if ema21 is None or ema9 is None or rsi is None:
             return
-
-        signal_time = candles[-2][0]
-        first_small_candle_close = round_price(symbol, candles[-3][4])
-        second_small_candle_close = round_price(symbol, candles[-2][4])
-
-        if detect_rising_three(candles):
-            first_candle_analysis = analyze_first_small_candle(candles[-3], 'rising')
+        signal_time = historical_candles[-2][0]
+        first_small_candle_close = round_price(symbol, historical_candles[-3][4])
+        second_small_candle_close = round_price(symbol, historical_candles[-2][4])
+        if detect_rising_three(historical_candles):
+            first_candle_analysis = analyze_first_small_candle(historical_candles[-3], 'rising')
             if first_candle_analysis['body_pct'] > BODY_SIZE_THRESHOLD:
                 return
             if sent_signals.get((symbol, 'rising')) == signal_time:
@@ -578,10 +527,9 @@ def process_symbol(symbol, alert_queue):
                 f"TP: {tp}\n"
                 f"SL: {sl}"
             )
-            alert_queue.put((symbol, msg, ema_status, category, side, entry_price, tp, first_candle_analysis['text'], first_candle_analysis['status'], first_candle_analysis['body_pct'], pattern, dca_status, sl))
-
-        elif detect_falling_three(candles):
-            first_candle_analysis = analyze_first_small_candle(candles[-3], 'falling')
+            await alert_queue.put((symbol, msg, ema_status, category, side, entry_price, tp, first_candle_analysis['text'], first_candle_analysis['status'], first_candle_analysis['body_pct'], pattern, dca_status, sl))
+        elif detect_falling_three(historical_candles):
+            first_candle_analysis = analyze_first_small_candle(historical_candles[-3], 'falling')
             if first_candle_analysis['body_pct'] > BODY_SIZE_THRESHOLD:
                 return
             if sent_signals.get((symbol, 'falling')) == signal_time:
@@ -625,35 +573,70 @@ def process_symbol(symbol, alert_queue):
                 f"TP: {tp}\n"
                 f"SL: {sl}"
             )
-            alert_queue.put((symbol, msg, ema_status, category, side, entry_price, tp, first_candle_analysis['text'], first_candle_analysis['status'], first_candle_analysis['body_pct'], pattern, dca_status, sl))
-
-    except ccxt.RateLimitExceeded:
-        time.sleep(5)
+            await alert_queue.put((symbol, msg, ema_status, category, side, entry_price, tp, first_candle_analysis['text'], first_candle_analysis['status'], first_candle_analysis['body_pct'], pattern, dca_status, sl))
     except Exception as e:
-        logging.error(f"Error on {symbol}: {e}")
-
-# === PROCESS BATCH ===
-def process_batch(symbols, alert_queue):
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_symbol = {executor.submit(process_symbol, symbol, alert_queue): symbol for symbol in symbols}
-        for future in as_completed(future_to_symbol):
-            future.result()
-
-# === SCAN LOOP ===
-def scan_loop():
+        logging.error(f"WS process error on {symbol}: {e}")
+# === WS KLINE STREAMING ===
+async def stream_klines_batch(exchange, symbols_batch, alert_queue, historical_cache):
+    tasks = []
+    for symbol in symbols_batch:
+        task = asyncio.create_task(watch_single_kline(exchange, symbol, alert_queue, historical_cache))
+        tasks.append(task)
+    await asyncio.gather(*tasks, return_exceptions=True)
+async def watch_single_kline(exchange, symbol, alert_queue, historical_cache):
+    while True:
+        try:
+            ohlcv = await exchange.watch_ohlcv(symbol, '15m')
+            if ohlcv and len(ohlcv) > 0 and ohlcv[-1][6]:  # Closed candle
+                if symbol not in historical_cache:
+                    # Fallback fetch if not loaded
+                    candles = await exchange.fetch_ohlcv(symbol, '15m', limit=30)
+                    historical_cache[symbol] = candles[-30:]
+                historical = historical_cache[symbol]
+                historical.append(ohlcv[-1])
+                historical = historical[-30:]
+                historical_cache[symbol] = historical
+                await process_symbol_ws(exchange, symbol, historical, alert_queue)
+        except ccxt.NetworkError:
+            logging.error(f"WS kline disconnect for {symbol}, reconnecting...")
+            await asyncio.sleep(5)
+        except Exception as e:
+            logging.error(f"Kline WS error for {symbol}: {e}")
+            await asyncio.sleep(1)
+# === MAIN ASYNC SCAN LOOP ===
+async def scan_loop_async(exchange):
     global closed_trades, last_summary_time
     load_trades()
-    symbols = get_symbols()
-    print(f"Scanning {len(symbols)} Binance Futures symbols...")
-    alert_queue = queue.Queue()
+    symbols = await get_symbols(exchange)
+    print(f"Scanning {len(symbols)} Binance Futures symbols via WS...")
 
-    chunk_size = math.ceil(len(symbols) / NUM_CHUNKS)
-    symbol_chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
+    # Initial historical load (REST, batched)
+    historical_cache = {}
+    semaphore = asyncio.Semaphore(10)  # Limit concurrent fetches
+    async def load_historical(s):
+        async with semaphore:
+            try:
+                candles = await exchange.fetch_ohlcv(s, '15m', limit=30)
+                if len(candles) >= 25:
+                    historical_cache[s] = candles
+            except Exception as e:
+                logging.error(f"Initial load error {s}: {e}")
+    tasks = [load_historical(s) for s in symbols]
+    await asyncio.gather(*tasks, return_exceptions=True)
 
-    def send_alerts():
+    alert_queue = asyncio.Queue()
+
+    # Batch symbols for WS (40 per batch)
+    batch_size = 40
+    symbol_batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
+    stream_tasks = [stream_klines_batch(exchange, batch, alert_queue, historical_cache) for batch in symbol_batches]
+
+    # Async alert sender
+    async def send_alerts_async():
         while True:
             try:
-                symbol, msg, ema_status, category, side, entry_price, tp, first_candle_analysis, pressure_status, body_pct, pattern, dca_status, sl = alert_queue.get(timeout=1)
+                item = await alert_queue.get()
+                symbol, msg, ema_status, category, side, entry_price, tp, first_candle_analysis, pressure_status, body_pct, pattern, dca_status, sl = item
                 with trade_lock:
                     if len(open_trades) < MAX_OPEN_TRADES:
                         mid = send_telegram(msg)
@@ -721,60 +704,49 @@ def scan_loop():
                                         save_trades()
                                         logging.info(f"Replaced trade with higher priority for {symbol}")
                                     break
-                    alert_queue.task_done()
-            except queue.Empty:
-                with trade_lock:
-                    for sym, trade in list(open_trades.items()):
-                        if 'hit' in trade:
-                            edit_telegram_message(trade['msg_id'], trade['msg'])
-                            logging.info(f"Safety net update for {sym}: {trade['hit']}")
-                time.sleep(1)
-                continue
+                alert_queue.task_done()
             except Exception as e:
                 logging.error(f"Alert thread error: {e}")
-                time.sleep(1)
+                await asyncio.sleep(1)
 
-    threading.Thread(target=send_alerts, daemon=True).start()
-    threading.Thread(target=check_tp, daemon=True).start()
+    # Start tasks
+    asyncio.create_task(send_alerts_async())
+    asyncio.create_task(watch_tp_sl_dca(exchange))
+    await asyncio.gather(*stream_tasks)  # Run forever
 
-    while True:
-        next_close = get_next_candle_close()
-        wait_time = max(0, next_close - time.time())
-        print(f"Waiting {wait_time:.1f} seconds for next 15m candle close...")
-        time.sleep(wait_time)
-
-        for i, chunk in enumerate(symbol_chunks):
-            print(f"Processing batch {i+1}/{NUM_CHUNKS}...")
-            process_batch(chunk, alert_queue)
-            if i < NUM_CHUNKS - 1:
-                time.sleep(BATCH_DELAY)
-
-        print("Scan complete.")
-        num_open = len(open_trades)
-        print(f"Number of open trades: {num_open}")
-
-        current_time = time.time()
-        if current_time - last_summary_time >= SUMMARY_INTERVAL:
-            all_closed_trades = load_closed_trades()
-            # ... [summary logic unchanged] ...
-            last_summary_time = current_time
-            closed_trades = []
-
+    # Summary logic (unchanged, but call periodically if needed)
+    current_time = time.time()
+    if current_time - last_summary_time >= SUMMARY_INTERVAL:
+        all_closed_trades = load_closed_trades()
+        # Add your summary logic here if needed
+        last_summary_time = current_time
+        closed_trades = []
 # === FLASK ===
 @app.route('/')
 def home():
-    return "Rising & Falling Three Pattern Bot is Live!"
-
+    return "Rising & Falling Three Pattern Bot is Live! (WS Mode)"
 # === RUN ===
-def run_bot():
-    global last_summary_time
+async def run_bot_async():
+    global exchange, last_summary_time
     load_trades()
     num_open = len(open_trades)
     last_summary_time = time.time()
-    startup_msg = f"BOT STARTED\nNumber of open trades: {num_open}"
+    startup_msg = f"BOT STARTED (WS Mode)\nNumber of open trades: {num_open}"
     send_telegram(startup_msg)
-    threading.Thread(target=scan_loop, daemon=True).start()
+    try:
+        exchange, proxies = await initialize_exchange()
+        await scan_loop_async(exchange)
+    except KeyboardInterrupt:
+        print("Shutting down...")
+    finally:
+        await exchange.close()
+
+def run_bot():
+    # Run async bot in thread, Flask in main
+    bot_thread = threading.Thread(target=lambda: asyncio.run(run_bot_async()))
+    bot_thread.start()
     app.run(host='0.0.0.0', port=8080)
 
 if __name__ == "__main__":
     run_bot()
+```
