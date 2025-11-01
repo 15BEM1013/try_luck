@@ -1,4 +1,3 @@
-
 import ccxt.pro as ccxt  # Use pro for WS
 import asyncio
 import time
@@ -131,46 +130,51 @@ def edit_telegram_message(message_id, new_text):
         print(f"Telegram updated: {new_text}")
     except Exception as e:
         print(f"Edit error: {e}")
-# === INIT ===
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-async def initialize_exchange():
+# === CREATE EXCHANGE INSTANCES WITH PROXY ROTATION ===
+async def create_exchanges():
+    exchanges = []
     for proxy in PROXY_LIST:
         try:
-            global proxies
-            proxies = get_proxy_config(proxy)
-            logging.info(f"Trying proxy: {proxy['host']}:{proxy['port']}")
+            proxies_config = get_proxy_config(proxy)
+            logging.info(f"Creating exchange for proxy: {proxy['host']}:{proxy['port']}")
             exchange = ccxt.binance({
                 'options': {'defaultType': 'future'},
-                'proxies': proxies,
+                'proxies': proxies_config,
                 'enableRateLimit': True,
                 'asyncio_loop': asyncio.get_event_loop(),
+                'rateLimit': 1200,  # Increase rate limit wait
             })
             await exchange.load_markets()
-            logging.info(f"Successfully connected using proxy: {proxy['host']}:{proxy['port']}")
-            return exchange, proxies
+            exchanges.append((exchange, proxies_config))
+            logging.info(f"Successfully created exchange for proxy: {proxy['host']}:{proxy['port']}")
         except Exception as e:
-            logging.error(f"Failed to connect with proxy {proxy['host']}:{proxy['port']}: {e}")
+            logging.error(f"Failed to create exchange with proxy {proxy['host']}:{proxy['port']}: {e}")
             continue
-    logging.error("All proxies failed. Falling back to direct connection.")
-    try:
-        exchange = ccxt.binance({
-            'options': {'defaultType': 'future'},
-            'enableRateLimit': True,
-            'asyncio_loop': asyncio.get_event_loop(),
-        })
-        await exchange.load_markets()
-        logging.info("Successfully connected using direct connection.")
-        return exchange, None
-    except Exception as e:
-        logging.error(f"Direct connection failed: {e}")
-        raise Exception("All proxies and direct connection failed.")
+    if not exchanges:
+        logging.error("No proxies worked. Trying direct connection.")
+        try:
+            exchange = ccxt.binance({
+                'options': {'defaultType': 'future'},
+                'enableRateLimit': True,
+                'asyncio_loop': asyncio.get_event_loop(),
+                'rateLimit': 1200,
+            })
+            await exchange.load_markets()
+            exchanges.append((exchange, None))
+        except Exception as e:
+            logging.error(f"Direct connection failed: {e}")
+            raise Exception("All connections failed.")
+    return exchanges
+
+# Global exchanges list
+exchanges = None
+proxies = None  # For Telegram, use first proxy
 app = Flask(__name__)
 sent_signals = {}
 open_trades = {}
 closed_trades = []
 last_summary_time = 0
-proxies = None  # Global for Telegram
+exchange = None  # Main exchange for WS, fallback to first
 # === CANDLE HELPERS ===
 def is_bullish(c): return c[4] > c[1]
 def is_bearish(c): return c[4] < c[1]
@@ -236,9 +240,9 @@ def calculate_rsi(candles, period=14):
         return None
     return talib.RSI(closes, timeperiod=period)[-1]
 # === PRICE ROUNDING ===
-def round_price(symbol, price):
+def round_price(markets, symbol, price):
     try:
-        market = exchange.market(symbol)  # Note: exchange needs to be global or passed
+        market = markets[symbol]
         tick_size = float(market['info']['filters'][0]['tickSize'])
         precision = int(round(-math.log10(tick_size)))
         return round(price, precision)
@@ -277,14 +281,14 @@ def detect_falling_three(candles):
     volume_decreasing = c1[5] > c0[5]
     return big_red and small_green_1 and small_green_0 and volume_decreasing
 # === SYMBOLS ===
-async def get_symbols(exchange):
-    markets = await exchange.load_markets()
+async def get_symbols(exch):
+    markets = await exch.load_markets()
     return [s for s in markets if 'USDT' in s and markets[s]['contract'] and markets[s].get('active') and markets[s].get('info', {}).get('status') == 'TRADING']
 # === ASYNC TP/SL/DCA CHECK ===
-async def check_tp_single(exchange, sym, ticker):
+async def check_tp_single(exch, markets, sym, ticker):
     global closed_trades
     try:
-        current_price = round_price(sym, ticker['last'])
+        current_price = round_price(markets, sym, ticker['last'])
         if not current_price:
             return
         hit = ""
@@ -314,11 +318,11 @@ async def check_tp_single(exchange, sym, ticker):
                 total_quantity = quantity + add_quantity
                 total_invested += add_amount
                 average_entry = (quantity * average_entry + add_quantity * add_price) / total_quantity
-                new_tp = round_price(sym, average_entry * (1 + TP_PCT) if open_trades[sym]['side'] == 'buy' else average_entry * (1 - TP_PCT))
-                new_sl = round_price(sym, average_entry * (1 - SL_PCT) if open_trades[sym]['side'] == 'buy' else average_entry * (1 + SL_PCT))
+                new_tp = round_price(markets, sym, average_entry * (1 + TP_PCT) if open_trades[sym]['side'] == 'buy' else average_entry * (1 - TP_PCT))
+                new_sl = round_price(markets, sym, average_entry * (1 - SL_PCT) if open_trades[sym]['side'] == 'buy' else average_entry * (1 + SL_PCT))
                 open_trades[sym]['adds_done'] = i + 1
                 open_trades[sym]['total_invested'] = total_invested
-                open_trades[sym]['average_entry'] = round_price(sym, average_entry)
+                open_trades[sym]['average_entry'] = round_price(markets, sym, average_entry)
                 open_trades[sym]['quantity'] = total_quantity
                 open_trades[sym]['tp'] = new_tp
                 open_trades[sym]['sl'] = new_sl
@@ -330,11 +334,11 @@ async def check_tp_single(exchange, sym, ticker):
                 dca_lines = []
                 for j, (against_pct_j, _) in enumerate(ADD_LEVELS):
                     if j < 2:
-                        dca_price = round_price(sym, initial_entry * (1 - against_pct_j) if open_trades[sym]['side'] == 'buy' else initial_entry * (1 + against_pct_j))
-                        dca_tp = round_price(sym, dca_price * (1 + TP_PCT) if open_trades[sym]['side'] == 'buy' else dca_price * (1 - TP_PCT))
+                        dca_price = round_price(markets, sym, initial_entry * (1 - against_pct_j) if open_trades[sym]['side'] == 'buy' else initial_entry * (1 + against_pct_j))
+                        dca_tp = round_price(markets, sym, dca_price * (1 + TP_PCT) if open_trades[sym]['side'] == 'buy' else dca_price * (1 - TP_PCT))
                         dca_lines.append(f"DCA {j+1} {dca_price} tp-{dca_tp} ({open_trades[sym]['dca_status'][j]})")
                     else:
-                        dca_price = round_price(sym, initial_entry * (1 - against_pct_j) if open_trades[sym]['side'] == 'buy' else initial_entry * (1 + against_pct_j))
+                        dca_price = round_price(markets, sym, initial_entry * (1 - against_pct_j) if open_trades[sym]['side'] == 'buy' else initial_entry * (1 + against_pct_j))
                         dca_lines.append(f"DCA3/SL {dca_price} ({open_trades[sym]['dca_status'][j]})")
                 new_msg = (
                     f"{sym} - {'BUY' if open_trades[sym]['side'] == 'buy' else 'SELL'}\n"
@@ -365,9 +369,6 @@ async def check_tp_single(exchange, sym, ticker):
                 hit_price = dca3_price
                 open_trades[sym]['dca_status'][2] = "SL Hit"
                 logging.info(f"DCA3 SL triggered for {sym} at {dca3_price}")
-        if not hit and open_trades[sym].get('adds_done', 0) == 0 and open_trades[sym].get('last_update_time'):
-            # For historical TP check, but since WS is real-time, skip or fetch if needed
-            pass  # In WS, we rely on streamed prices
         if not hit and current_price:
             if open_trades[sym]['side'] == 'buy':
                 if current_price >= open_trades[sym]['tp']:
@@ -413,11 +414,11 @@ async def check_tp_single(exchange, sym, ticker):
             dca_lines = []
             for j, (against_pct_j, _) in enumerate(ADD_LEVELS):
                 if j < 2:
-                    dca_price = round_price(sym, open_trades[sym]['initial_entry'] * (1 - against_pct_j) if open_trades[sym]['side'] == 'buy' else open_trades[sym]['initial_entry'] * (1 + against_pct_j))
-                    dca_tp = round_price(sym, dca_price * (1 + TP_PCT) if open_trades[sym]['side'] == 'buy' else dca_price * (1 - TP_PCT))
+                    dca_price = round_price(markets, sym, open_trades[sym]['initial_entry'] * (1 - against_pct_j) if open_trades[sym]['side'] == 'buy' else open_trades[sym]['initial_entry'] * (1 + against_pct_j))
+                    dca_tp = round_price(markets, sym, dca_price * (1 + TP_PCT) if open_trades[sym]['side'] == 'buy' else dca_price * (1 - TP_PCT))
                     dca_lines.append(f"DCA {j+1} {dca_price} tp-{dca_tp} ({open_trades[sym]['dca_status'][j]})")
                 else:
-                    dca_price = round_price(sym, open_trades[sym]['initial_entry'] * (1 - against_pct_j) if open_trades[sym]['side'] == 'buy' else open_trades[sym]['initial_entry'] * (1 + against_pct_j))
+                    dca_price = round_price(markets, sym, open_trades[sym]['initial_entry'] * (1 - against_pct_j) if open_trades[sym]['side'] == 'buy' else open_trades[sym]['initial_entry'] * (1 + against_pct_j))
                     dca_lines.append(f"DCA3/SL {dca_price} ({open_trades[sym]['dca_status'][j]})")
             new_msg = (
                 f"{sym} - {'BUY' if open_trades[sym]['side'] == 'buy' else 'SELL'}\n"
@@ -439,7 +440,7 @@ async def check_tp_single(exchange, sym, ticker):
             logging.info(f"Trade closed for {sym}")
     except Exception as e:
         logging.error(f"TP/SL/DCA check error on {sym}: {e}")
-async def watch_tp_sl_dca(exchange):
+async def watch_tp_sl_dca(main_exch, markets):
     global closed_trades
     ticker_tasks = {}
     while True:
@@ -453,24 +454,24 @@ async def watch_tp_sl_dca(exchange):
                 # Subscribe new open trades
                 for sym in open_trades:
                     if sym not in ticker_tasks:
-                        task = asyncio.create_task(watch_single_ticker(exchange, sym))
+                        task = asyncio.create_task(watch_single_ticker(main_exch, sym, markets))
                         ticker_tasks[sym] = task
             await asyncio.sleep(TP_CHECK_INTERVAL)
         except Exception as e:
             logging.error(f"TP/SL/DCA loop error: {e}")
             await asyncio.sleep(5)
-async def watch_single_ticker(exchange, sym):
+async def watch_single_ticker(main_exch, sym, markets):
     while sym in open_trades:
         try:
-            ticker = await exchange.watch_ticker(sym)
-            await check_tp_single(exchange, sym, ticker)
+            ticker = await main_exch.watch_ticker(sym)
+            await check_tp_single(main_exch, markets, sym, ticker)
             if sym not in open_trades:
                 break
         except Exception as e:
             logging.error(f"Ticker WS error for {sym}: {e}")
             await asyncio.sleep(1)
 # === PROCESS SYMBOL WS ===
-async def process_symbol_ws(exchange, symbol, historical_candles, alert_queue):
+async def process_symbol_ws(markets, symbol, historical_candles, alert_queue):
     try:
         if len(historical_candles) < 25:
             return
@@ -480,8 +481,8 @@ async def process_symbol_ws(exchange, symbol, historical_candles, alert_queue):
         if ema21 is None or ema9 is None or rsi is None:
             return
         signal_time = historical_candles[-2][0]
-        first_small_candle_close = round_price(symbol, historical_candles[-3][4])
-        second_small_candle_close = round_price(symbol, historical_candles[-2][4])
+        first_small_candle_close = round_price(markets, symbol, historical_candles[-3][4])
+        second_small_candle_close = round_price(markets, symbol, historical_candles[-2][4])
         if detect_rising_three(historical_candles):
             first_candle_analysis = analyze_first_small_candle(historical_candles[-3], 'rising')
             if first_candle_analysis['body_pct'] > BODY_SIZE_THRESHOLD:
@@ -504,18 +505,18 @@ async def process_symbol_ws(exchange, symbol, historical_candles, alert_queue):
                 category = 'two_cautions'
             side = 'sell'
             entry_price = second_small_candle_close
-            tp = round_price(symbol, entry_price * (1 - TP_PCT))
-            sl = round_price(symbol, entry_price * (1 + SL_PCT))
+            tp = round_price(markets, symbol, entry_price * (1 - TP_PCT))
+            sl = round_price(markets, symbol, entry_price * (1 + SL_PCT))
             pattern = 'rising'
             dca_lines = []
             dca_status = {0: "Pending", 1: "Pending", 2: "Pending"}
             for i, (against_pct, _) in enumerate(ADD_LEVELS):
                 if i < 2:
-                    dca_price = round_price(symbol, entry_price * (1 + against_pct))
-                    dca_tp = round_price(symbol, dca_price * (1 - TP_PCT))
+                    dca_price = round_price(markets, symbol, entry_price * (1 + against_pct))
+                    dca_tp = round_price(markets, symbol, dca_price * (1 - TP_PCT))
                     dca_lines.append(f"DCA {i+1} {dca_price} tp-{dca_tp} (Pending)")
                 else:
-                    dca_price = round_price(symbol, entry_price * (1 + against_pct))
+                    dca_price = round_price(markets, symbol, entry_price * (1 + against_pct))
                     dca_lines.append(f"DCA3/SL {dca_price} (Pending)")
             msg = (
                 f"{symbol} - SELL\n"
@@ -550,18 +551,18 @@ async def process_symbol_ws(exchange, symbol, historical_candles, alert_queue):
                 category = 'two_cautions'
             side = 'buy'
             entry_price = second_small_candle_close
-            tp = round_price(symbol, entry_price * (1 + TP_PCT))
-            sl = round_price(symbol, entry_price * (1 - SL_PCT))
+            tp = round_price(markets, symbol, entry_price * (1 + TP_PCT))
+            sl = round_price(markets, symbol, entry_price * (1 - SL_PCT))
             pattern = 'falling'
             dca_lines = []
             dca_status = {0: "Pending", 1: "Pending", 2: "Pending"}
             for i, (against_pct, _) in enumerate(ADD_LEVELS):
                 if i < 2:
-                    dca_price = round_price(symbol, entry_price * (1 - against_pct))
-                    dca_tp = round_price(symbol, dca_price * (1 + TP_PCT))
+                    dca_price = round_price(markets, symbol, entry_price * (1 - against_pct))
+                    dca_tp = round_price(markets, symbol, dca_price * (1 + TP_PCT))
                     dca_lines.append(f"DCA {i+1} {dca_price} tp-{dca_tp} (Pending)")
                 else:
-                    dca_price = round_price(symbol, entry_price * (1 - against_pct))
+                    dca_price = round_price(markets, symbol, entry_price * (1 - against_pct))
                     dca_lines.append(f"DCA3/SL {dca_price} (Pending)")
             msg = (
                 f"{symbol} - BUY\n"
@@ -577,26 +578,35 @@ async def process_symbol_ws(exchange, symbol, historical_candles, alert_queue):
     except Exception as e:
         logging.error(f"WS process error on {symbol}: {e}")
 # === WS KLINE STREAMING ===
-async def stream_klines_batch(exchange, symbols_batch, alert_queue, historical_cache):
+async def stream_klines_batch(main_exch, markets, symbols_batch, alert_queue, historical_cache):
     tasks = []
     for symbol in symbols_batch:
-        task = asyncio.create_task(watch_single_kline(exchange, symbol, alert_queue, historical_cache))
+        task = asyncio.create_task(watch_single_kline(main_exch, markets, symbol, alert_queue, historical_cache))
         tasks.append(task)
     await asyncio.gather(*tasks, return_exceptions=True)
-async def watch_single_kline(exchange, symbol, alert_queue, historical_cache):
+async def watch_single_kline(main_exch, markets, symbol, alert_queue, historical_cache):
     while True:
         try:
-            ohlcv = await exchange.watch_ohlcv(symbol, '15m')
-            if ohlcv and len(ohlcv) > 0 and ohlcv[-1][6]:  # Closed candle
-                if symbol not in historical_cache:
-                    # Fallback fetch if not loaded
-                    candles = await exchange.fetch_ohlcv(symbol, '15m', limit=30)
-                    historical_cache[symbol] = candles[-30:]
-                historical = historical_cache[symbol]
-                historical.append(ohlcv[-1])
-                historical = historical[-30:]
-                historical_cache[symbol] = historical
-                await process_symbol_ws(exchange, symbol, historical, alert_queue)
+            ohlcv = await main_exch.watch_ohlcv(symbol, '15m')
+            if ohlcv and len(ohlcv) > 0:
+                latest_candle = ohlcv[-1]
+                if len(latest_candle) >= 7 and latest_candle[6]:  # Check length and is_closed
+                    if symbol not in historical_cache or len(historical_cache[symbol]) < 25:
+                        # Fallback fetch if not loaded or insufficient
+                        try:
+                            candles = await main_exch.fetch_ohlcv(symbol, '15m', limit=30)
+                            if len(candles) >= 25:
+                                historical_cache[symbol] = candles
+                        except Exception as e:
+                            logging.warning(f"Failed fallback fetch for {symbol}: {e}")
+                            await asyncio.sleep(60)  # Wait 1 min before retry
+                            continue
+                    historical = historical_cache.get(symbol, [])
+                    if len(historical) > 0 and historical[-1][0] < latest_candle[0]:
+                        historical.append(latest_candle)
+                        historical = historical[-30:]
+                        historical_cache[symbol] = historical
+                        await process_symbol_ws(markets, symbol, historical, alert_queue)
         except ccxt.NetworkError:
             logging.error(f"WS kline disconnect for {symbol}, reconnecting...")
             await asyncio.sleep(5)
@@ -604,32 +614,29 @@ async def watch_single_kline(exchange, symbol, alert_queue, historical_cache):
             logging.error(f"Kline WS error for {symbol}: {e}")
             await asyncio.sleep(1)
 # === MAIN ASYNC SCAN LOOP ===
-async def scan_loop_async(exchange):
+async def scan_loop_async(exchanges_list, main_exch, main_markets):
     global closed_trades, last_summary_time
     load_trades()
-    symbols = await get_symbols(exchange)
+    # Get symbols from main exchange
+    symbols = await get_symbols(main_exch)
+    # Limit to top 100 by volume or something, but for now, all, but load slowly
     print(f"Scanning {len(symbols)} Binance Futures symbols via WS...")
 
-    # Initial historical load (REST, batched)
+    # Initial historical load with proxy rotation and delays
     historical_cache = {}
-    semaphore = asyncio.Semaphore(10)  # Limit concurrent fetches
-    async def load_historical(s):
-        async with semaphore:
-            try:
-                candles = await exchange.fetch_ohlcv(s, '15m', limit=30)
-                if len(candles) >= 25:
-                    historical_cache[s] = candles
-            except Exception as e:
-                logging.error(f"Initial load error {s}: {e}")
-    tasks = [load_historical(s) for s in symbols]
-    await asyncio.gather(*tasks, return_exceptions=True)
+    # Distribute symbols across exchanges
+    symbols_per_exch = math.ceil(len(symbols) / len(exchanges_list))
+    for idx, (exch, _) in enumerate(exchanges_list):
+        batch_symbols = symbols[idx * symbols_per_exch : (idx + 1) * symbols_per_exch]
+        if batch_symbols:
+            await load_historical_batch(exch, batch_symbols, historical_cache)
 
     alert_queue = asyncio.Queue()
 
-    # Batch symbols for WS (40 per batch)
-    batch_size = 40
+    # Batch symbols for WS (20 per batch to reduce load)
+    batch_size = 20
     symbol_batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
-    stream_tasks = [stream_klines_batch(exchange, batch, alert_queue, historical_cache) for batch in symbol_batches]
+    stream_tasks = [stream_klines_batch(main_exch, main_markets, batch, alert_queue, historical_cache) for batch in symbol_batches]
 
     # Async alert sender
     async def send_alerts_async():
@@ -711,35 +718,64 @@ async def scan_loop_async(exchange):
 
     # Start tasks
     asyncio.create_task(send_alerts_async())
-    asyncio.create_task(watch_tp_sl_dca(exchange))
+    asyncio.create_task(watch_tp_sl_dca(main_exch, main_markets))
     await asyncio.gather(*stream_tasks)  # Run forever
 
-    # Summary logic (unchanged, but call periodically if needed)
+    # Summary logic
     current_time = time.time()
     if current_time - last_summary_time >= SUMMARY_INTERVAL:
         all_closed_trades = load_closed_trades()
         # Add your summary logic here if needed
         last_summary_time = current_time
         closed_trades = []
+
+async def load_historical_batch(exch, batch_symbols, historical_cache):
+    """Load historical for a batch with delays"""
+    semaphore = asyncio.Semaphore(2)  # Very low concurrency
+    async def load_single(s):
+        async with semaphore:
+            for attempt in range(3):
+                try:
+                    candles = await exch.fetch_ohlcv(s, '15m', limit=30)
+                    if len(candles) >= 25:
+                        historical_cache[s] = candles
+                        logging.info(f"Loaded historical for {s}")
+                    break
+                except ccxt.RateLimitExceeded:
+                    wait_time = 2 ** attempt * 10  # Exponential backoff
+                    logging.warning(f"Rate limit for {s}, waiting {wait_time}s")
+                    await asyncio.sleep(wait_time)
+                except Exception as e:
+                    logging.error(f"Load error for {s}: {e}")
+                    break
+            await asyncio.sleep(1)  # Delay between fetches
+
+    tasks = [load_single(s) for s in batch_symbols]
+    await asyncio.gather(*tasks, return_exceptions=True)
+
 # === FLASK ===
 @app.route('/')
 def home():
     return "Rising & Falling Three Pattern Bot is Live! (WS Mode)"
 # === RUN ===
 async def run_bot_async():
-    global exchange, last_summary_time
+    global exchanges, proxies, exchange, last_summary_time
     load_trades()
     num_open = len(open_trades)
     last_summary_time = time.time()
     startup_msg = f"BOT STARTED (WS Mode)\nNumber of open trades: {num_open}"
     send_telegram(startup_msg)
     try:
-        exchange, proxies = await initialize_exchange()
-        await scan_loop_async(exchange)
+        exchanges_list = await create_exchanges()
+        # Use first for main WS and Telegram
+        exchange, proxies = exchanges_list[0]
+        main_markets = await exchange.load_markets()
+        await scan_loop_async(exchanges_list, exchange, main_markets)
     except KeyboardInterrupt:
         print("Shutting down...")
     finally:
-        await exchange.close()
+        for exch, _ in exchanges_list:
+            await exch.close()
 
 def run_bot():
     # Run async bot in thread, Flask in main
@@ -749,4 +785,3 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
-
