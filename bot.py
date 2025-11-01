@@ -45,6 +45,7 @@ SUMMARY_INTERVAL = 3600
 ADD_LEVELS = [(0.015, 5.0), (0.03, 10.0), (0.045, 0.0)]
 ACCOUNT_SIZE = 1000.0
 MAX_RISK_PCT = 4.5 / 100
+USE_TESTNET = True  # Enable testnet to bypass geo-restrictions
 # === PROXY CONFIGURATION ===
 PROXY_LIST = [
     {'host': '142.111.48.253', 'port': 7030, 'username': 'vmrcabza', 'password': '2tmwim0mjpmI'},
@@ -142,39 +143,63 @@ async def create_exchanges():
                 'proxies': proxies_config,
                 'enableRateLimit': True,
                 'asyncio_loop': asyncio.get_event_loop(),
-                'rateLimit': 1200,  # Increase rate limit wait
+                'rateLimit': 1200,
+                'sandbox': USE_TESTNET,
             })
             await exchange.load_markets()
             exchanges.append((exchange, proxies_config))
             logging.info(f"Successfully created exchange for proxy: {proxy['host']}:{proxy['port']}")
+            break  # Use first successful
+        except ccxt.NetworkError as e:
+            if "451" in str(e) or "restricted location" in str(e):
+                logging.warning(f"Geo-restriction on proxy {proxy['host']}:{proxy['port']}, skipping")
+            else:
+                logging.error(f"Failed to create exchange with proxy {proxy['host']}:{proxy['port']}: {e}")
+            continue
         except Exception as e:
             logging.error(f"Failed to create exchange with proxy {proxy['host']}:{proxy['port']}: {e}")
             continue
     if not exchanges:
-        logging.error("No proxies worked. Trying direct connection.")
+        logging.warning("No proxies worked. Trying direct connection with testnet.")
         try:
             exchange = ccxt.binance({
                 'options': {'defaultType': 'future'},
                 'enableRateLimit': True,
                 'asyncio_loop': asyncio.get_event_loop(),
                 'rateLimit': 1200,
+                'sandbox': USE_TESTNET,
             })
             await exchange.load_markets()
             exchanges.append((exchange, None))
+            logging.info("Successfully created direct exchange (testnet).")
+        except ccxt.NetworkError as e:
+            if "451" in str(e) or "restricted location" in str(e):
+                logging.error(f"Geo-restriction on direct connection. Bot cannot connect to Binance from this location. Use a VPN or allowed hosting.")
+                # Create dummy exchange for fallback
+                exchange = ccxt.binance({
+                    'options': {'defaultType': 'future'},
+                    'sandbox': True,
+                })
+                exchanges.append((exchange, None))
+                logging.warning("Using dummy exchange - WS may not work, no trading possible.")
+            else:
+                logging.error(f"Direct connection failed: {e}")
+                raise Exception("All connections failed.")
         except Exception as e:
             logging.error(f"Direct connection failed: {e}")
             raise Exception("All connections failed.")
     return exchanges
 
 # Global exchanges list
-exchanges = None
+exchanges_list = []
 proxies = None  # For Telegram, use first proxy
 app = Flask(__name__)
 sent_signals = {}
 open_trades = {}
 closed_trades = []
 last_summary_time = 0
-exchange = None  # Main exchange for WS, fallback to first
+main_exch = None  # Main exchange for WS
+main_markets = {}  # Fallback empty
 # === CANDLE HELPERS ===
 def is_bullish(c): return c[4] > c[1]
 def is_bearish(c): return c[4] < c[1]
@@ -242,17 +267,21 @@ def calculate_rsi(candles, period=14):
 # === PRICE ROUNDING ===
 def round_price(markets, symbol, price):
     try:
+        if not markets or symbol not in markets:
+            return round(price, 4)  # Fallback precision
         market = markets[symbol]
         tick_size = float(market['info']['filters'][0]['tickSize'])
         precision = int(round(-math.log10(tick_size)))
         return round(price, precision)
     except Exception as e:
-        print(f"Error rounding price for {symbol}: {e}")
-        return price
+        logging.warning(f"Error rounding price for {symbol}: {e}, using fallback")
+        return round(price, 4)
 # === PATTERN DETECTION ===
 def detect_rising_three(candles):
+    if len(candles) < 4:
+        return False
     c2, c1, c0 = candles[-4], candles[-3], candles[-2]
-    avg_volume = sum(c[5] for c in candles[-6:-1]) / 5
+    avg_volume = sum(c[5] for c in candles[-6:-1]) / 5 if len(candles) >= 6 else candles[-1][5]
     big_green = is_bullish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT and c2[5] > avg_volume
     small_red_1 = (
         is_bearish(c1) and body_pct(c1) <= MAX_SMALL_BODY_PCT and
@@ -267,8 +296,10 @@ def detect_rising_three(candles):
     volume_decreasing = c1[5] > c0[5]
     return big_green and small_red_1 and small_red_0 and volume_decreasing
 def detect_falling_three(candles):
+    if len(candles) < 4:
+        return False
     c2, c1, c0 = candles[-4], candles[-3], candles[-2]
-    avg_volume = sum(c[5] for c in candles[-6:-1]) / 5
+    avg_volume = sum(c[5] for c in candles[-6:-1]) / 5 if len(candles) >= 6 else candles[-1][5]
     big_red = is_bearish(c2) and body_pct(c2) >= MIN_BIG_BODY_PCT and c2[5] > avg_volume
     small_green_1 = (
         is_bullish(c1) and body_pct(c1) <= MAX_SMALL_BODY_PCT and
@@ -282,14 +313,21 @@ def detect_falling_three(candles):
     return big_red and small_green_1 and small_green_0 and volume_decreasing
 # === SYMBOLS ===
 async def get_symbols(exch):
-    markets = await exch.load_markets()
-    return [s for s in markets if 'USDT' in s and markets[s]['contract'] and markets[s].get('active') and markets[s].get('info', {}).get('status') == 'TRADING']
+    try:
+        markets = await exch.load_markets()
+        return [s for s in markets if 'USDT' in s and markets[s]['contract'] and markets.get(s, {}).get('active', True) and markets[s].get('info', {}).get('status') == 'TRADING']
+    except:
+        # Fallback to common symbols if markets not loaded
+        logging.warning("Using fallback symbols list")
+        return ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'XRP/USDT:USDT', 'BCH/USDT:USDT']  # Add more as needed
 # === ASYNC TP/SL/DCA CHECK ===
 async def check_tp_single(exch, markets, sym, ticker):
     global closed_trades
     try:
         current_price = round_price(markets, sym, ticker['last'])
         if not current_price:
+            return
+        if sym not in open_trades:
             return
         hit = ""
         pnl = 0
@@ -353,7 +391,7 @@ async def check_tp_single(exch, markets, sym, ticker):
                 open_trades[sym]['msg'] = new_msg
                 edit_telegram_message(open_trades[sym]['msg_id'], new_msg)
                 save_trades()
-                return  # Break after DCA to avoid multiple in one check
+                return  # Break after DCA
         if adds_done < 2:
             against_pct, _ = ADD_LEVELS[2]
             dca3_sl_triggered = False
@@ -592,17 +630,19 @@ async def watch_single_kline(main_exch, markets, symbol, alert_queue, historical
                 latest_candle = ohlcv[-1]
                 if len(latest_candle) >= 7 and latest_candle[6]:  # Check length and is_closed
                     if symbol not in historical_cache or len(historical_cache[symbol]) < 25:
-                        # Fallback fetch if not loaded or insufficient
+                        # Try fallback fetch
                         try:
                             candles = await main_exch.fetch_ohlcv(symbol, '15m', limit=30)
                             if len(candles) >= 25:
                                 historical_cache[symbol] = candles
                         except Exception as e:
                             logging.warning(f"Failed fallback fetch for {symbol}: {e}")
-                            await asyncio.sleep(60)  # Wait 1 min before retry
+                            # Start with what we have from WS
+                            if symbol not in historical_cache:
+                                historical_cache[symbol] = [latest_candle]
                             continue
                     historical = historical_cache.get(symbol, [])
-                    if len(historical) > 0 and historical[-1][0] < latest_candle[0]:
+                    if len(historical) == 0 or historical[-1][0] < latest_candle[0]:
                         historical.append(latest_candle)
                         historical = historical[-30:]
                         historical_cache[symbol] = historical
@@ -619,24 +659,28 @@ async def scan_loop_async(exchanges_list, main_exch, main_markets):
     load_trades()
     # Get symbols from main exchange
     symbols = await get_symbols(main_exch)
-    # Limit to top 100 by volume or something, but for now, all, but load slowly
     print(f"Scanning {len(symbols)} Binance Futures symbols via WS...")
 
-    # Initial historical load with proxy rotation and delays
+    # Initial historical load if possible
     historical_cache = {}
-    # Distribute symbols across exchanges
-    symbols_per_exch = math.ceil(len(symbols) / len(exchanges_list))
-    for idx, (exch, _) in enumerate(exchanges_list):
-        batch_symbols = symbols[idx * symbols_per_exch : (idx + 1) * symbols_per_exch]
-        if batch_symbols:
-            await load_historical_batch(exch, batch_symbols, historical_cache)
+    if exchanges_list:
+        # Distribute symbols across exchanges
+        symbols_per_exch = math.ceil(len(symbols) / len(exchanges_list))
+        tasks = []
+        for idx, (exch, _) in enumerate(exchanges_list):
+            batch_symbols = symbols[idx * symbols_per_exch : (idx + 1) * symbols_per_exch]
+            if batch_symbols:
+                tasks.append(load_historical_batch(exch, batch_symbols, historical_cache))
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        logging.info(f"Loaded historical data for {len(historical_cache)} symbols")
 
     alert_queue = asyncio.Queue()
 
-    # Batch symbols for WS (20 per batch to reduce load)
+    # Batch symbols for WS (20 per batch)
     batch_size = 20
     symbol_batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
-    stream_tasks = [stream_klines_batch(main_exch, main_markets, batch, alert_queue, historical_cache) for batch in symbol_batches]
+    stream_tasks = [stream_klines_batch(main_exch, main_markets, batch, alert_queue, historical_cache) for batch in symbol_batches if batch]
 
     # Async alert sender
     async def send_alerts_async():
@@ -716,18 +760,24 @@ async def scan_loop_async(exchanges_list, main_exch, main_markets):
                 logging.error(f"Alert thread error: {e}")
                 await asyncio.sleep(1)
 
-    # Start tasks
-    asyncio.create_task(send_alerts_async())
-    asyncio.create_task(watch_tp_sl_dca(main_exch, main_markets))
-    await asyncio.gather(*stream_tasks)  # Run forever
+    # Start tasks if possible
+    if stream_tasks:
+        asyncio.create_task(send_alerts_async())
+        if open_trades:
+            asyncio.create_task(watch_tp_sl_dca(main_exch, main_markets))
+        await asyncio.gather(*stream_tasks)  # Run forever
+    else:
+        logging.error("No WS tasks started due to connection issues. Bot idle.")
 
-    # Summary logic
-    current_time = time.time()
-    if current_time - last_summary_time >= SUMMARY_INTERVAL:
-        all_closed_trades = load_closed_trades()
-        # Add your summary logic here if needed
-        last_summary_time = current_time
-        closed_trades = []
+    # Summary logic (periodic)
+    while True:
+        await asyncio.sleep(SUMMARY_INTERVAL)
+        current_time = time.time()
+        if current_time - last_summary_time >= SUMMARY_INTERVAL:
+            all_closed_trades = load_closed_trades()
+            # Add your summary logic here if needed
+            last_summary_time = current_time
+            closed_trades = []
 
 async def load_historical_batch(exch, batch_symbols, historical_cache):
     """Load historical for a batch with delays"""
@@ -742,13 +792,17 @@ async def load_historical_batch(exch, batch_symbols, historical_cache):
                         logging.info(f"Loaded historical for {s}")
                     break
                 except ccxt.RateLimitExceeded:
-                    wait_time = 2 ** attempt * 10  # Exponential backoff
+                    wait_time = 2 ** attempt * 10
                     logging.warning(f"Rate limit for {s}, waiting {wait_time}s")
                     await asyncio.sleep(wait_time)
+                except ccxt.NetworkError as e:
+                    if "451" in str(e) or "restricted" in str(e):
+                        logging.warning(f"Geo-restriction on fetch for {s}, skipping")
+                        break
                 except Exception as e:
                     logging.error(f"Load error for {s}: {e}")
                     break
-            await asyncio.sleep(1)  # Delay between fetches
+            await asyncio.sleep(2)  # Increased delay
 
     tasks = [load_single(s) for s in batch_symbols]
     await asyncio.gather(*tasks, return_exceptions=True)
@@ -756,26 +810,32 @@ async def load_historical_batch(exch, batch_symbols, historical_cache):
 # === FLASK ===
 @app.route('/')
 def home():
-    return "Rising & Falling Three Pattern Bot is Live! (WS Mode)"
+    return f"Rising & Falling Three Pattern Bot is Live! (WS Mode, Testnet: {USE_TESTNET})"
 # === RUN ===
 async def run_bot_async():
-    global exchanges, proxies, exchange, last_summary_time
+    global exchanges_list, proxies, main_exch, main_markets, last_summary_time
     load_trades()
     num_open = len(open_trades)
     last_summary_time = time.time()
-    startup_msg = f"BOT STARTED (WS Mode)\nNumber of open trades: {num_open}"
+    startup_msg = f"BOT STARTED (WS Mode, Testnet: {USE_TESTNET})\nNumber of open trades: {num_open}"
     send_telegram(startup_msg)
+    exchanges_list = []
     try:
         exchanges_list = await create_exchanges()
         # Use first for main WS and Telegram
-        exchange, proxies = exchanges_list[0]
-        main_markets = await exchange.load_markets()
-        await scan_loop_async(exchanges_list, exchange, main_markets)
-    except KeyboardInterrupt:
-        print("Shutting down...")
+        main_exch, proxies = exchanges_list[0]
+        main_markets = await main_exch.load_markets()
+        await scan_loop_async(exchanges_list, main_exch, main_markets)
+    except Exception as e:
+        logging.error(f"Bot startup error: {e}")
+        send_telegram(f"Bot error: {str(e)[:200]} - Check logs")
     finally:
-        for exch, _ in exchanges_list:
-            await exch.close()
+        if exchanges_list:
+            for exch, _ in exchanges_list:
+                try:
+                    await exch.close()
+                except:
+                    pass
 
 def run_bot():
     # Run async bot in thread, Flask in main
