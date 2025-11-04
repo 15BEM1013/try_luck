@@ -3,13 +3,13 @@ import time
 import threading
 import requests
 from flask import Flask
+import os
 from datetime import datetime
 import pytz
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import math
 import queue
 import json
-import os
 import talib
 import numpy as np
 import logging
@@ -45,18 +45,8 @@ ADD_LEVELS = [(0.015, 5.0), (0.03, 10.0)]
 ACCOUNT_SIZE = 1000.0
 MAX_RISK_PCT = 4.5 / 100
 # === PROXY CONFIGURATION ===
-PROXY_LIST = [
-    {'host': '107.150.41.226', 'port': 24881, 'username': None, 'password': None},  # US
-    {'host': '87.98.184.249', 'port': 2222, 'username': None, 'password': None},    # Germany (EU)
-    {'host': '173.212.215.22', 'port': 7070, 'username': None, 'password': None},   # Romania (EU)
-    {'host': '47.254.70.132', 'port': 1111, 'username': None, 'password': None},    # US (AWS)
-    {'host': '96.126.98.244', 'port': 9090, 'username': None, 'password': None},    # US
-    {'host': '156.244.15.246', 'port': 1100, 'username': None, 'password': None},   # US
-    {'host': '31.128.41.253', 'port': 28080, 'username': None, 'password': None},   # Ukraine (EU-adjacent)
-    {'host': '176.108.246.18', 'port': 10804, 'username': None, 'password': None},  # Russia (backup)
-    {'host': '217.25.90.44', 'port': 5050, 'username': None, 'password': None},     # Russia (backup)
-    {'host': '185.193.89.69', 'port': 2285, 'username': None, 'password': None},    # EU-ish
-]
+# Disabled proxies for stability on Render; use direct connection
+PROXY_LIST = []  # Empty list to skip proxies entirely
 def get_proxy_config(proxy):
     if proxy.get('username') and proxy.get('password'):
         auth = f"{proxy['username']}:{proxy['password']}@"
@@ -115,6 +105,8 @@ def load_closed_trades():
         print(f"Error loading closed trades: {e}")
         return []
 # === TELEGRAM ===
+# For Telegram, try direct first (no proxies) to avoid flakes
+proxies = None  # Global for Telegram: None = direct
 def send_telegram(msg, parse_mode=None, reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {'chat_id': CHAT_ID, 'text': msg}
@@ -123,11 +115,20 @@ def send_telegram(msg, parse_mode=None, reply_markup=None):
     if reply_markup:
         data['reply_markup'] = json.dumps(reply_markup)
     try:
-        response = requests.post(url, data=data, timeout=5, proxies=proxies).json()
-        print(f"Telegram sent: {msg}")
+        # Try without proxies first
+        response = requests.post(url, data=data, timeout=10).json()  # Increased timeout
+        print(f"Telegram sent (direct): {msg[:50]}...")
         return response.get('result', {}).get('message_id')
     except Exception as e:
-        print(f"Telegram error: {e}")
+        print(f"Telegram error (direct): {e}")
+        # Fallback to global proxies if set (but we're using None)
+        try:
+            if proxies:
+                response = requests.post(url, data=data, timeout=10, proxies=proxies).json()
+                print(f"Telegram sent (proxy): {msg[:50]}...")
+                return response.get('result', {}).get('message_id')
+        except Exception as e2:
+            print(f"Telegram error (proxy fallback): {e2}")
         return None
 def edit_telegram_message(message_id, new_text, parse_mode=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
@@ -135,45 +136,41 @@ def edit_telegram_message(message_id, new_text, parse_mode=None):
     if parse_mode:
         data['parse_mode'] = parse_mode
     try:
-        requests.post(url, data=data, timeout=5, proxies=proxies)
-        print(f"Telegram updated: {new_text}")
+        # Direct first
+        requests.post(url, data=data, timeout=10)
+        print(f"Telegram updated (direct): {new_text[:50]}...")
     except Exception as e:
-        print(f"Edit error: {e}")
+        print(f"Edit error (direct): {e}")
+        # Fallback if needed
+        try:
+            if proxies:
+                requests.post(url, data=data, timeout=10, proxies=proxies)
+                print(f"Telegram updated (proxy): {new_text[:50]}...")
+        except Exception as e2:
+            print(f"Edit error (proxy): {e2}")
 # === INIT ===
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 def initialize_exchange():
-    for proxy in PROXY_LIST:
-        try:
-            proxies = get_proxy_config(proxy)
-            logging.info(f"Trying proxy: {proxy['host']}:{proxy['port']}")
-            session = requests.Session()
-            retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-            session.mount('https://', HTTPAdapter(pool_maxsize=20, max_retries=retries))
-            exchange = ccxt.binance({
-                'options': {'defaultType': 'future'},
-                'proxies': proxies,
-                'enableRateLimit': True,
-                'session': session
-            })
-            exchange.load_markets()
-            logging.info(f"Successfully connected using proxy: {proxy['host']}:{proxy['port']}")
-            return exchange, proxies
-        except Exception as e:
-            logging.error(f"Failed to connect with proxy {proxy['host']}:{proxy['port']}: {e}")
-            continue
-    logging.error("All proxies failed. Falling back to direct connection.")
+    global proxies
+    # Skip proxy loop since PROXY_LIST is empty; go direct immediately
+    logging.info("Using direct connection for Binance (proxies disabled for stability).")
     try:
+        session = requests.Session()
+        retries = Retry(total=5, backoff_factor=2, status_forcelist=[429, 500, 502, 503, 504])
+        session.mount('https://', HTTPAdapter(pool_maxsize=20, max_retries=retries))
         exchange = ccxt.binance({
             'options': {'defaultType': 'future'},
-            'enableRateLimit': True
+            'enableRateLimit': True,
+            'session': session
         })
         exchange.load_markets()
-        logging.info("Successfully connected using direct connection.")
+        logging.info("Successfully connected to Binance using direct connection.")
+        proxies = None  # Ensure direct for Telegram too
         return exchange, None
     except Exception as e:
         logging.error(f"Direct connection failed: {e}")
-        raise Exception("All proxies and direct connection failed.")
+        raise Exception("Direct connection to Binance failed.")
 app = Flask(__name__)
 sent_signals = {}
 open_trades = {}
@@ -748,6 +745,7 @@ def run_bot():
     startup_msg = f"BOT STARTED\nNumber of open trades: {num_open}"
     send_telegram(startup_msg)
     threading.Thread(target=scan_loop, daemon=True).start()
-    app.run(host='0.0.0.0', port=8080)
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port, debug=False)
 if __name__ == "__main__":
     run_bot()
