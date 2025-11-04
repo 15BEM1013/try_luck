@@ -143,24 +143,58 @@ def send_telegram(msg, parse_mode=None, reply_markup=None):
         data['parse_mode'] = parse_mode
     if reply_markup:
         data['reply_markup'] = json.dumps(reply_markup)
+    for proxy in PROXY_LIST:
+        try:
+            proxy_config = get_proxy_config(proxy)
+            logging.info(f"Trying Telegram with proxy: {proxy['host']}:{proxy['port']}")
+            response = requests.post(url, data=data, timeout=5, proxies=proxy_config).json()
+            if response.get('ok'):
+                print(f"Telegram sent: {msg}")
+                return response.get('result', {}).get('message_id')
+            else:
+                logging.error(f"Telegram response error: {response}")
+        except Exception as e:
+            logging.error(f"Telegram error with proxy {proxy['host']}:{proxy['port']}: {e}")
+            continue
+    logging.warning("All proxies failed for Telegram. Trying direct connection.")
     try:
-        response = requests.post(url, data=data, timeout=5, proxies=proxies).json()
-        print(f"Telegram sent: {msg}")
-        return response.get('result', {}).get('message_id')
+        response = requests.post(url, data=data, timeout=5).json()
+        if response.get('ok'):
+            print(f"Telegram sent (direct): {msg}")
+            return response.get('result', {}).get('message_id')
+        else:
+            logging.error(f"Direct Telegram response error: {response}")
     except Exception as e:
-        print(f"Telegram error: {e}")
-        return None
+        logging.error(f"Direct Telegram error: {e}")
+    return None
 
 def edit_telegram_message(message_id, new_text, parse_mode=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
     if parse_mode:
         data['parse_mode'] = parse_mode
+    for proxy in PROXY_LIST:
+        try:
+            proxy_config = get_proxy_config(proxy)
+            logging.info(f"Trying Telegram edit with proxy: {proxy['host']}:{proxy['port']}")
+            response = requests.post(url, data=data, timeout=5, proxies=proxy_config).json()
+            if response.get('ok'):
+                print(f"Telegram updated: {new_text}")
+                return
+            else:
+                logging.error(f"Telegram edit response error: {response}")
+        except Exception as e:
+            logging.error(f"Telegram edit error with proxy {proxy['host']}:{proxy['port']}: {e}")
+            continue
+    logging.warning("All proxies failed for Telegram edit. Trying direct connection.")
     try:
-        requests.post(url, data=data, timeout=5, proxies=proxies)
-        print(f"Telegram updated: {new_text}")
+        response = requests.post(url, data=data, timeout=5).json()
+        if response.get('ok'):
+            print(f"Telegram updated (direct): {new_text}")
+        else:
+            logging.error(f"Direct Telegram edit response error: {response}")
     except Exception as e:
-        print(f"Edit error: {e}")
+        logging.error(f"Direct Telegram edit error: {e}")
 
 # === INIT ===
 from requests.adapters import HTTPAdapter
@@ -175,7 +209,7 @@ def initialize_exchange():
             retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
             session.mount('https://', HTTPAdapter(pool_maxsize=20, max_retries=retries))
             exchange = ccxt.bybit({
-                'options': {'defaultType': 'swap'},  # Use 'swap' for USDT perpetual futures
+                'options': {'defaultType': 'swap'},
                 'proxies': proxies,
                 'enableRateLimit': True,
                 'session': session
@@ -325,8 +359,21 @@ def detect_falling_three(candles):
 
 # === SYMBOLS ===
 def get_symbols():
-    markets = exchange.load_markets()
-    return [s for s in markets if s.endswith(':USDT') and markets[s]['swap'] and markets[s]['active'] and markets[s].get('info', {}).get('contractStatus') == 'TRADING']
+    try:
+        markets = exchange.load_markets()
+        symbols = [
+            s for s in markets
+            if s.endswith(':USDT') and
+            markets[s].get('swap') and
+            markets[s].get('active') and
+            markets[s].get('info', {}).get('status') == 'TRADING' and
+            markets[s].get('type') == 'linear'
+        ]
+        logging.info(f"Fetched {len(symbols)} USDT-margined perpetual futures symbols: {symbols[:5]}...")
+        return symbols
+    except Exception as e:
+        logging.error(f"Error fetching symbols: {e}")
+        return []
 
 # === CANDLE CLOSE ===
 def get_next_candle_close():
@@ -635,11 +682,14 @@ def scan_loop():
     global closed_trades, last_summary_time
     load_trades()
     symbols = get_symbols()
+    if not symbols:
+        logging.error("No symbols available to scan. Retrying in 60 seconds...")
+        time.sleep(60)
+        return
     print(f"Scanning {len(symbols)} Bybit Futures symbols...")
     alert_queue = queue.Queue()
-    chunk_size = math.ceil(len(symbols) / NUM_CHUNKS)
+    chunk_size = math.ceil(len(symbols) / NUM_CHUNKS) if symbols else 1
     symbol_chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
-
     def send_alerts():
         while True:
             try:
@@ -723,7 +773,6 @@ def scan_loop():
             except Exception as e:
                 logging.error(f"Alert thread error: {e}")
                 time.sleep(1)
-
     threading.Thread(target=send_alerts, daemon=True).start()
     threading.Thread(target=check_tp, daemon=True).start()
     while True:
@@ -731,6 +780,13 @@ def scan_loop():
         wait_time = max(0, next_close - time.time())
         print(f"Waiting {wait_time:.1f} seconds for next 15m candle close...")
         time.sleep(wait_time)
+        symbols = get_symbols()
+        if not symbols:
+            logging.error("No symbols available to scan. Retrying in 60 seconds...")
+            time.sleep(60)
+            continue
+        chunk_size = math.ceil(len(symbols) / NUM_CHUNKS)
+        symbol_chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
         for i, chunk in enumerate(symbol_chunks):
             print(f"Processing batch {i+1}/{NUM_CHUNKS}...")
             process_batch(chunk, alert_queue)
@@ -749,7 +805,12 @@ def scan_loop():
                 wins = [t for t in all_closed_trades if t['pnl'] > 0]
                 win_rate = (len(wins) / total_trades * 100) if total_trades > 0 else 0
                 avg_pnl = total_pnl / total_trades if total_trades > 0 else 0
-                
+                cat_breakdown = {}
+                for trade in all_closed_trades:
+                    cat = trade['category']
+                    cat_breakdown[cat] = cat_breakdown.get(cat, {'count': 0, 'pnl': 0})
+                    cat_breakdown[cat]['count'] += 1
+                    cat_breakdown[cat]['pnl'] += trade['pnl']
                 summary_msg = (
                     f"📊 **PNL SUMMARY** (Last Hour)\n"
                     f"Total Trades: {total_trades}\n"
@@ -761,7 +822,6 @@ def scan_loop():
                 for cat, stats in cat_breakdown.items():
                     avg_cat_pnl = stats['pnl'] / stats['count']
                     summary_msg += f"{cat}: {stats['count']} trades, ${stats['pnl']:.2f} ({avg_cat_pnl:.2f}/trade)\n"
-                
                 send_telegram(summary_msg, parse_mode='Markdown')
             else:
                 send_telegram("📊 No closed trades in the last hour.", parse_mode='Markdown')
