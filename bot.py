@@ -189,25 +189,23 @@ def edit_telegram_message(message_id, new_text, parse_mode=None):
 
 # === INIT ===
 def initialize_exchange():
-    for attempt in range(3):
-        proxy = get_random_proxy()
-        try:
-            exchange = ccxt.binance({
-                'options': {'defaultType': 'future'},
-                'enableRateLimit': True,
-                'proxies': {
-                    'http': f"socks5://{proxy['username']}:{proxy['password']}@{proxy['host']}:{proxy['port']}",
-                    'https': f"socks5://{proxy['username']}:{proxy['password']}@{proxy['host']}:{proxy['port']}"
-                }
-            })
-            exchange.load_markets()
-            logging.info(f"Successfully connected to Binance using proxy {proxy['host']}:{proxy['port']}")
-            return exchange
-        except Exception as e:
-            logging.error(f"Failed to initialize exchange with proxy {proxy['host']}:{proxy['port']}: {e}")
-            if attempt < 2:
+    for proxy in random.sample(PROXY_LIST, len(PROXY_LIST)):  # Shuffle proxies for better distribution
+        for attempt in range(2):
+            try:
+                exchange = ccxt.binance({
+                    'options': {'defaultType': 'future'},
+                    'enableRateLimit': True,
+                    'proxies': {
+                        'http': f"socks5://{proxy['username']}:{proxy['password']}@{proxy['host']}:{proxy['port']}",
+                        'https': f"socks5://{proxy['username']}:{proxy['password']}@{proxy['host']}:{proxy['port']}"
+                    }
+                })
+                exchange.load_markets()
+                logging.info(f"Successfully connected to Binance using proxy {proxy['host']}:{proxy['port']}")
+                return exchange
+            except Exception as e:
+                logging.error(f"Failed to initialize exchange with proxy {proxy['host']}:{proxy['port']} (attempt {attempt+1}): {e}")
                 time.sleep(2 ** attempt)
-                continue
     # Fallback to direct connection
     try:
         exchange = ccxt.binance({
@@ -219,19 +217,14 @@ def initialize_exchange():
         return exchange
     except Exception as e:
         logging.error(f"Failed to initialize exchange with direct connection: {e}")
-        raise Exception("Connection to Binance failed")
+    return None
 
 app = Flask(__name__)
 sent_signals = {}
 open_trades = {}
 closed_trades = []
 last_summary_time = 0
-
-try:
-    exchange = initialize_exchange()
-except Exception as e:
-    logging.error(f"Failed to initialize exchange: {e}")
-    exit(1)
+exchange = None
 
 # === CANDLE HELPERS ===
 def is_bullish(c): return c[4] > c[1]
@@ -351,6 +344,12 @@ def detect_falling_three(candles):
 
 # === SYMBOLS ===
 def get_symbols():
+    global exchange
+    if exchange is None:
+        exchange = initialize_exchange()
+        if exchange is None:
+            logging.error("Failed to initialize exchange in get_symbols")
+            return []
     try:
         markets = exchange.load_markets()
         symbols = [
@@ -378,8 +377,14 @@ def get_next_candle_close():
 
 # === TP AND SL CHECK AND DCA ===
 def check_tp():
-    global closed_trades
+    global closed_trades, exchange
     while True:
+        if exchange is None:
+            logging.error("Exchange not initialized in check_tp, retrying...")
+            exchange = initialize_exchange()
+            if exchange is None:
+                time.sleep(60)
+                continue
         try:
             with trade_lock:
                 for sym, trade in list(open_trades.items()):
@@ -550,6 +555,10 @@ def check_tp():
 
 # === PROCESS SYMBOL ===
 def process_symbol(symbol, alert_queue):
+    global exchange
+    if exchange is None:
+        logging.error(f"Exchange not initialized for {symbol}, skipping...")
+        return
     try:
         for attempt in range(3):
             try:
@@ -615,7 +624,7 @@ def process_symbol(symbol, alert_queue):
             )
             alert_queue.put((symbol, msg, ema_status, category, side, entry_price, tp, first_candle_analysis['text'], first_candle_analysis['status'], first_candle_analysis['body_pct'], pattern, dca_status, sl))
         elif detect_falling_three(candles):
-            first_candle_analysis = analyze_first_small_cycardia_first_small_candle(candles[-3], 'falling')
+            first_candle_analysis = analyze_first_small_candle(candles[-3], 'falling')
             if first_candle_analysis['body_pct'] > BODY_SIZE_THRESHOLD:
                 return
             if sent_signals.get((symbol, 'falling')) == signal_time:
@@ -671,17 +680,9 @@ def process_batch(symbols, alert_queue):
 
 # === SCAN LOOP ===
 def scan_loop():
-    global closed_trades, last_summary_time
+    global closed_trades, last_summary_time, exchange
     load_trades()
-    symbols = get_symbols()
-    if not symbols:
-        logging.error("No symbols available to scan. Retrying in 60 seconds...")
-        time.sleep(60)
-        return
-    logging.info(f"Scanning {len(symbols)} Binance Futures symbols...")
     alert_queue = queue.Queue()
-    chunk_size = max(1, math.ceil(len(symbols) / NUM_CHUNKS))
-    symbol_chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
     def send_alerts():
         while True:
             try:
@@ -768,13 +769,17 @@ def scan_loop():
     threading.Thread(target=send_alerts, daemon=True).start()
     threading.Thread(target=check_tp, daemon=True).start()
     while True:
-        next_close = get_next_candle_close()
-        wait_time = max(0, next_close - time.time())
-        logging.info(f"Waiting {wait_time:.1f} seconds for next 15m candle close...")
-        time.sleep(wait_time)
+        if exchange is None:
+            logging.error("Exchange not initialized, attempting to reconnect...")
+            exchange = initialize_exchange()
+            if exchange is None:
+                send_telegram("⚠️ Failed to connect to Binance. Retrying in 60 seconds...")
+                time.sleep(60)
+                continue
         symbols = get_symbols()
         if not symbols:
             logging.error("No symbols available to scan. Retrying in 60 seconds...")
+            send_telegram("⚠️ No symbols fetched from Binance. Retrying in 60 seconds...")
             time.sleep(60)
             continue
         chunk_size = max(1, math.ceil(len(symbols) / NUM_CHUNKS))
@@ -819,6 +824,10 @@ def scan_loop():
                 send_telegram("📊 No closed trades in the last hour.", parse_mode='Markdown')
             last_summary_time = current_time
             closed_trades = []
+        next_close = get_next_candle_close()
+        wait_time = max(0, next_close - time.time())
+        logging.info(f"Waiting {wait_time:.1f} seconds for next 15m candle close...")
+        time.sleep(wait_time)
 
 # === FLASK ===
 @app.route('/')
@@ -827,22 +836,29 @@ def home():
 
 @app.route('/health')
 def health():
-    return {"status": "healthy", "time": get_ist_time().isoformat()}
+    global exchange
+    status = "healthy" if exchange else "waiting for Binance connection"
+    return {"status": status, "time": get_ist_time().isoformat()}
 
 # === RUN ===
 def run_bot():
-    global last_summary_time
+    global last_summary_time, exchange
     try:
         load_trades()
         num_open = len(open_trades)
         last_summary_time = time.time()
         startup_msg = f"BOT STARTED\nNumber of open trades: {num_open}"
         send_telegram(startup_msg)
+        exchange = initialize_exchange()
+        if exchange is None:
+            logging.warning("Initial Binance connection failed, starting scan loop anyway...")
+            send_telegram("⚠️ Initial Binance connection failed. Bot will retry in scan loop.")
         threading.Thread(target=scan_loop, daemon=True).start()
         logging.info("Starting Flask server on 0.0.0.0:8080")
-        app.run(host='0.0.0.0', port=8080)
+        app.run(host='0.0.0.0', port=8080, debug=False)
     except Exception as e:
         logging.error(f"Error in run_bot: {e}")
+        send_telegram(f"⚠️ Bot error: {str(e)}")
         raise
 
 if __name__ == "__main__":
@@ -850,4 +866,5 @@ if __name__ == "__main__":
         run_bot()
     except Exception as e:
         logging.error(f"Fatal error in main: {e}")
-        exit(1)
+        send_telegram(f"🚨 Fatal bot error: {str(e)}")
+        app.run(host='0.0.0.0', port=8080, debug=False)  # Ensure Flask starts even on failure
