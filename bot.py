@@ -13,6 +13,7 @@ import os
 import talib
 import numpy as np
 import logging
+import random
 
 # === CONFIG ===
 BOT_TOKEN = '7662307654:AAG5-juB1faNaFZfC8zjf4LwlZMzs6lEmtE'
@@ -45,6 +46,18 @@ SUMMARY_INTERVAL = 3600
 ADD_LEVELS = [(0.015, 5.0), (0.03, 10.0)]
 ACCOUNT_SIZE = 1000.0
 MAX_RISK_PCT = 4.5 / 100
+PROXY_LIST = [
+    {'host': '45.152.121.223', 'port': 1080, 'username': 'vzyfsrzp', 'password': 'mwsfv5e6j1stz5v6'},
+    {'host': '104.144.233.81', 'port': 1080, 'username': 'vzyfsrzp', 'password': 'mwsfv5e6j1stz5v6'},
+    {'host': '45.41.178.83', 'port': 1080, 'username': 'vzyfsrzp', 'password': 'mwsfv5e6j1stz5v6'},
+    {'host': '209.127.168.127', 'port': 1080, 'username': 'vzyfsrzp', 'password': 'mwsfv5e6j1stz5v6'},
+    {'host': '209.127.147.135', 'port': 1080, 'username': 'vzyfsrzp', 'password': 'mwsfv5e6j1stz5v6'},
+    {'host': '104.144.139.79', 'port': 1080, 'username': 'vzyfsrzp', 'password': 'mwsfv5e6j1stz5v6'},
+    {'host': '104.144.34.143', 'port': 1080, 'username': 'vzyfsrzp', 'password': 'mwsfv5e6j1stz5v6'},
+    {'host': '209.127.154.147', 'port': 1080, 'username': 'vzyfsrzp', 'password': 'mwsfv5e6j1stz5v6'},
+    {'host': '45.41.176.210', 'port': 1080, 'username': 'vzyfsrzp', 'password': 'mwsfv5e6j1stz5v6'},
+    {'host': '45.152.122.212', 'port': 1080, 'username': 'vzyfsrzp', 'password': 'mwsfv5e6j1stz5v6'}
+]
 
 # === CONFIGURE LOGGING ===
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -101,6 +114,10 @@ def load_closed_trades():
         print(f"Error loading closed trades: {e}")
         return []
 
+# === PROXY HELPER ===
+def get_random_proxy():
+    return random.choice(PROXY_LIST)
+
 # === TELEGRAM ===
 def send_telegram(msg, parse_mode=None, reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -109,15 +126,23 @@ def send_telegram(msg, parse_mode=None, reply_markup=None):
         data['parse_mode'] = parse_mode
     if reply_markup:
         data['reply_markup'] = json.dumps(reply_markup)
-    try:
-        response = requests.post(url, data=data, timeout=5).json()
-        if response.get('ok'):
-            print(f"Telegram sent: {msg}")
-            return response.get('result', {}).get('message_id')
-        else:
-            logging.error(f"Telegram response error: {response}")
-    except Exception as e:
-        logging.error(f"Telegram error: {e}")
+    for attempt in range(3):
+        proxy = get_random_proxy()
+        proxy_url = f"socks5://{proxy['username']}:{proxy['password']}@{proxy['host']}:{proxy['port']}"
+        proxies = {'http': proxy_url, 'https': proxy_url}
+        try:
+            response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
+            if response.get('ok'):
+                print(f"Telegram sent via proxy {proxy['host']}:{proxy['port']}: {msg}")
+                return response.get('result', {}).get('message_id')
+            else:
+                logging.error(f"Telegram response error: {response}")
+        except Exception as e:
+            logging.error(f"Telegram error with proxy {proxy['host']}:{proxy['port']}: {e}")
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+                continue
+    logging.error("All proxy attempts failed for Telegram send")
     return None
 
 def edit_telegram_message(message_id, new_text, parse_mode=None):
@@ -125,28 +150,42 @@ def edit_telegram_message(message_id, new_text, parse_mode=None):
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
     if parse_mode:
         data['parse_mode'] = parse_mode
-    try:
-        response = requests.post(url, data=data, timeout=5).json()
-        if response.get('ok'):
-            print(f"Telegram updated: {new_text}")
-        else:
-            logging.error(f"Telegram edit response error: {response}")
-    except Exception as e:
-        logging.error(f"Telegram edit error: {e}")
+    for attempt in range(3):
+        proxy = get_random_proxy()
+        proxy_url = f"socks5://{proxy['username']}:{proxy['password']}@{proxy['host']}:{proxy['port']}"
+        proxies = {'http': proxy_url, 'https': proxy_url}
+        try:
+            response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
+            if response.get('ok'):
+                print(f"Telegram updated via proxy {proxy['host']}:{proxy['port']}: {new_text}")
+            else:
+                logging.error(f"Telegram edit response error: {response}")
+            return
+        except Exception as e:
+            logging.error(f"Telegram edit error with proxy {proxy['host']}:{proxy['port']}: {e}")
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+                continue
+    logging.error("All proxy attempts failed for Telegram edit")
 
 # === INIT ===
 def initialize_exchange():
     try:
+        proxy = get_random_proxy()
         exchange = ccxt.binance({
             'options': {'defaultType': 'future'},
-            'enableRateLimit': True
+            'enableRateLimit': True,
+            'proxies': {
+                'http': f"socks5://{proxy['username']}:{proxy['password']}@{proxy['host']}:{proxy['port']}",
+                'https': f"socks5://{proxy['username']}:{proxy['password']}@{proxy['host']}:{proxy['port']}"
+            }
         })
         exchange.load_markets()
-        logging.info("Successfully connected to Binance using direct connection.")
+        logging.info(f"Successfully connected to Binance using proxy {proxy['host']}:{proxy['port']}")
         return exchange
     except Exception as e:
-        logging.error(f"Failed to initialize exchange: {e}")
-        raise Exception("Direct connection to Binance failed.")
+        logging.error(f"Failed to initialize exchange with proxy {proxy['host']}:{proxy['port']}: {e}")
+        raise Exception("Connection to Binance failed.")
 
 app = Flask(__name__)
 sent_signals = {}
