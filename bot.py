@@ -102,13 +102,13 @@ def load_closed_trades():
         return []
 
 # === TELEGRAM ===
-def send_telegram(msg, parse_mode=None, slump_markup=None):
+def send_telegram(msg, parse_mode=None, reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {'chat_id': CHAT_ID, 'text': msg}
     if parse_mode:
         data['parse_mode'] = parse_mode
-    if slump_markup:
-        data['slump_markup'] = json.dumps(slump_markup)
+    if reply_markup:
+        data['reply_markup'] = json.dumps(reply_markup)
     try:
         response = requests.post(url, data=data, timeout=5).json()
         if response.get('ok'):
@@ -137,16 +137,16 @@ def edit_telegram_message(message_id, new_text, parse_mode=None):
 # === INIT ===
 def initialize_exchange():
     try:
-        exchange = ccxt.bybit({
-            'options': {'defaultType': 'swap'},
+        exchange = ccxt.binance({
+            'options': {'defaultType': 'future'},
             'enableRateLimit': True
         })
         exchange.load_markets()
-        logging.info("Successfully connected to Bybit using direct connection.")
+        logging.info("Successfully connected to Binance using direct connection.")
         return exchange
     except Exception as e:
         logging.error(f"Failed to initialize exchange: {e}")
-        raise Exception("Direct connection to Bybit failed.")
+        raise Exception("Direct connection to Binance failed.")
 
 app = Flask(__name__)
 sent_signals = {}
@@ -232,9 +232,13 @@ def calculate_rsi(candles, period=14):
 def round_price(symbol, price):
     try:
         market = exchange.market(symbol)
-        tick_size = float(market['info']['filters'][0]['tickSize'])
-        precision = int(round(-math.log10(tick_size)))
-        return round(price, precision)
+        price_precision = market.get('precision', {}).get('price', 8)
+        for f in market['info'].get('filters', []):
+            if f['filterType'] == 'PRICE_FILTER':
+                tick_size = float(f['tickSize'])
+                price_precision = int(round(-math.log10(tick_size)))
+                break
+        return round(price, price_precision)
     except Exception as e:
         print(f"Error rounding price for {symbol}: {e}")
         return price
@@ -278,11 +282,11 @@ def get_symbols():
         markets = exchange.load_markets()
         symbols = [
             s for s in markets
-            if s.endswith(':USDT') and
-            markets[s].get('swap') and
+            if s.endswith('USDT') and
+            markets[s].get('future') and
             markets[s].get('active') and
             markets[s].get('info', {}).get('status') == 'TRADING' and
-            markets[s].get('type') == 'linear'
+            markets[s].get('info', {}).get('contractType') == 'PERPETUAL'
         ]
         logging.info(f"Fetched {len(symbols)} USDT-margined perpetual futures symbols: {symbols[:5]}...")
         return symbols
@@ -363,7 +367,7 @@ def check_tp():
                                         dca_lines.append(f"DCA {j+1} {dca_price} tp-{dca_tp} ({status_formatted})")
                                     sl_price = round_price(sym, average_entry * (1 - SL_PCT) if trade['side'] == 'buy' else average_entry * (1 + SL_PCT))
                                     new_msg = (
-                                        f"{sym} - {'BUY' if trade['side'] == 'buy' else 'SELL'}\n"
+                                        f"{sym.replace('USDT', '/USDT')} - {'BUY' if trade['side'] == 'buy' else 'SELL'}\n"
                                         f"Initial entry: {trade['initial_entry']}\n"
                                         f"Average entry: {trade['average_entry']}\n"
                                         f"Total invested: ${trade['total_invested']:.2f}\n"
@@ -447,7 +451,7 @@ def check_tp():
                                 dca_lines.append(f"DCA {j+1} {dca_price} tp-{dca_tp} ({status_formatted})")
                             sl_price = round_price(sym, trade['average_entry'] * (1 - SL_PCT) if trade['side'] == 'buy' else trade['average_entry'] * (1 + SL_PCT))
                             new_msg = (
-                                f"{sym} - {'BUY' if trade['side'] == 'buy' else 'SELL'}\n"
+                                f"{sym.replace('USDT', '/USDT')} - {'BUY' if trade['side'] == 'buy' else 'SELL'}\n"
                                 f"Initial entry: {trade['initial_entry']}\n"
                                 f"Average entry: {trade['average_entry']}\n"
                                 f"Total invested: ${trade['total_invested']:.2f}\n"
@@ -527,7 +531,7 @@ def process_symbol(symbol, alert_queue):
                 dca_lines.append(f"DCA {i+1} {dca_price} tp-{dca_tp} (Pending)")
             sl_price = round_price(symbol, entry_price * (1 + SL_PCT))
             msg = (
-                f"{symbol} - SELL\n"
+                f"{symbol.replace('USDT', '/USDT')} - SELL\n"
                 f"Initial entry: {entry_price}\n"
                 f"Average entry: {entry_price}\n"
                 f"Total invested: ${CAPITAL:.2f}\n"
@@ -570,7 +574,7 @@ def process_symbol(symbol, alert_queue):
                 dca_lines.append(f"DCA {i+1} {dca_price} tp-{dca_tp} (Pending)")
             sl_price = round_price(symbol, entry_price * (1 - SL_PCT))
             msg = (
-                f"{symbol} - BUY\n"
+                f"{symbol.replace('USDT', '/USDT')} - BUY\n"
                 f"Initial entry: {entry_price}\n"
                 f"Average entry: {entry_price}\n"
                 f"Total invested: ${CAPITAL:.2f}\n"
@@ -601,7 +605,7 @@ def scan_loop():
         logging.error("No symbols available to scan. Retrying in 60 seconds...")
         time.sleep(60)
         return
-    print(f"Scanning {len(symbols)} Bybit Futures symbols...")
+    print(f"Scanning {len(symbols)} Binance Futures symbols...")
     alert_queue = queue.Queue()
     chunk_size = max(1, math.ceil(len(symbols) / NUM_CHUNKS))
     symbol_chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
@@ -644,7 +648,7 @@ def scan_loop():
                         if CATEGORY_PRIORITY[category] > lowest_priority:
                             for sym, trade in list(open_trades.items()):
                                 if CATEGORY_PRIORITY[trade['category']] == lowest_priority:
-                                    edit_telegram_message(trade['msg_id'], f"{sym} - Trade canceled for higher-priority signal.")
+                                    edit_telegram_message(trade['msg_id'], f"{sym.replace('USDT', '/USDT')} - Trade canceled for higher-priority signal.")
                                     del open_trades[sym]
                                     save_trades()
                                     mid = send_telegram(msg, parse_mode='Markdown')
