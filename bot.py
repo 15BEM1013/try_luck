@@ -13,6 +13,7 @@ import os
 import talib
 import numpy as np
 import logging
+
 # === CONFIG ===
 BOT_TOKEN = '7662307654:AAG5-juB1faNaFZfC8zjf4LwlZMzs6lEmtE'
 CHAT_ID = '655537138'
@@ -44,9 +45,9 @@ SUMMARY_INTERVAL = 3600
 ADD_LEVELS = [(0.015, 5.0), (0.03, 10.0)]
 ACCOUNT_SIZE = 1000.0
 MAX_RISK_PCT = 4.5 / 100
+
 # === PROXY CONFIGURATION ===
 PROXY_LIST = [
-    # Original 10 proxies updated with new credentials
     {'host': '142.111.48.253', 'port': 7030, 'username': 'wwlzwbfi', 'password': 'x7o3f7md9g6j'},
     {'host': '31.59.20.176', 'port': 6754, 'username': 'wwlzwbfi', 'password': 'x7o3f7md9g6j'},
     {'host': '23.95.150.145', 'port': 6114, 'username': 'wwlzwbfi', 'password': 'x7o3f7md9g6j'},
@@ -56,19 +57,19 @@ PROXY_LIST = [
     {'host': '64.137.96.74', 'port': 6641, 'username': 'wwlzwbfi', 'password': 'x7o3f7md9g6j'},
     {'host': '216.10.27.159', 'port': 6837, 'username': 'wwlzwbfi', 'password': 'x7o3f7md9g6j'},
     {'host': '142.111.67.146', 'port': 5611, 'username': 'wwlzwbfi', 'password': 'x7o3f7md9g6j'},
-    {'host': '142.147.128.93', 'port': 6593, 'username': 'wwlzwbfi', 'password': 'x7o3f7md9g6j'},
-    # Additional 10 free proxies (unauthenticated, elite/anonymous, various countries)
-    {'host': '162.240.19.30', 'port': 80, 'username': None, 'password': None}, # US elite
-    {'host': '18.60.222.217', 'port': 57032,'username': None, 'password': None}, # India elite
-    {'host': '217.138.18.75', 'port': 8080, 'username': None, 'password': None}, # UK elite
-    {'host': '38.54.71.67', 'port': 80, 'username': None, 'password': None}, # Nepal elite
-    {'host': '81.90.149.188', 'port': 3128, 'username': None, 'password': None}, # Iran elite
-    {'host': '162.214.165.203', 'port': 80, 'username': None, 'password': None}, # US elite
-    {'host': '138.124.49.149', 'port': 10808,'username': None, 'password': None}, # Sweden elite
-    {'host': '188.40.57.101', 'port': 80, 'username': None, 'password': None}, # Germany elite
-    {'host': '202.130.218.193', 'port': 1080, 'username': None, 'password': None}, # Australia elite
-    {'host': '192.73.244.36', 'port': 80, 'username': None, 'password': None}, # US elite
+    {'host': '142.147.128.2', 'port': 6593, 'username': 'wwlzwbfi', 'password': 'x7o3f7md9g6j'},
+    {'host': '162.240.19.30', 'port': 80, 'username': None, 'password': None},
+    {'host': '18.60.222.217', 'port': 57032, 'username': None, 'password': None},
+    {'host': '217.138.18.75', 'port': 8080, 'username': None, 'password': None},
+    {'host': '38.54.71.67', 'port': 80, 'username': None, 'password': None},
+    {'host': '81.90.149.188', 'port': 3128, 'username': None, 'password': None},
+    {'host': '162.214.165.203', 'port': 80, 'username': None, 'password': None},
+    {'host': '138.124.49.149', 'port': 10808, 'username': None, 'password': None},
+    {'host': '188.40.57.101', 'port': 80, 'username': None, 'password': None},
+    {'host': '202.130.218.193', 'port': 1080, 'username': None, 'password': None},
+    {'host': '192.73.244.36', 'port': 80, 'username': None, 'password': None},
 ]
+
 def get_proxy_config(proxy):
     if proxy.get('username') and proxy.get('password'):
         auth = f"{proxy['username']}:{proxy['password']}@"
@@ -78,14 +79,18 @@ def get_proxy_config(proxy):
         "http": f"http://{auth}{proxy['host']}:{proxy['port']}",
         "https": f"http://{auth}{proxy['host']}:{proxy['port']}"
     }
+
 # === CONFIGURE LOGGING ===
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
 # === THREAD LOCK ===
 trade_lock = threading.Lock()
+
 # === TIME ZONE HELPER ===
 def get_ist_time():
     ist = pytz.timezone('Asia/Kolkata')
     return datetime.now(ist)
+
 # === TRADE PERSISTENCE ===
 def save_trades():
     try:
@@ -94,6 +99,7 @@ def save_trades():
         print(f"Trades saved to {TRADE_FILE}")
     except Exception as e:
         print(f"Error saving trades: {e}")
+
 def load_trades():
     global open_trades
     try:
@@ -105,6 +111,7 @@ def load_trades():
     except Exception as e:
         print(f"Error loading trades: {e}")
         open_trades = {}
+
 def save_closed_trades(closed_trade):
     try:
         all_closed_trades = []
@@ -117,6 +124,7 @@ def save_closed_trades(closed_trade):
         print(f"Closed trade saved to {CLOSED_TRADE_FILE}")
     except Exception as e:
         print(f"Error saving closed trades: {e}")
+
 def load_closed_trades():
     try:
         if os.path.exists(CLOSED_TRADE_FILE):
@@ -126,6 +134,7 @@ def load_closed_trades():
     except Exception as e:
         print(f"Error loading closed trades: {e}")
         return []
+
 # === TELEGRAM ===
 def send_telegram(msg, parse_mode=None, reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -141,6 +150,7 @@ def send_telegram(msg, parse_mode=None, reply_markup=None):
     except Exception as e:
         print(f"Telegram error: {e}")
         return None
+
 def edit_telegram_message(message_id, new_text, parse_mode=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
@@ -151,9 +161,11 @@ def edit_telegram_message(message_id, new_text, parse_mode=None):
         print(f"Telegram updated: {new_text}")
     except Exception as e:
         print(f"Edit error: {e}")
+
 # === INIT ===
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
 def initialize_exchange():
     for proxy in PROXY_LIST:
         try:
@@ -162,8 +174,8 @@ def initialize_exchange():
             session = requests.Session()
             retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
             session.mount('https://', HTTPAdapter(pool_maxsize=20, max_retries=retries))
-            exchange = ccxt.binance({
-                'options': {'defaultType': 'future'},
+            exchange = ccxt.bybit({
+                'options': {'defaultType': 'swap'},  # Use 'swap' for USDT perpetual futures
                 'proxies': proxies,
                 'enableRateLimit': True,
                 'session': session
@@ -176,8 +188,8 @@ def initialize_exchange():
             continue
     logging.error("All proxies failed. Falling back to direct connection.")
     try:
-        exchange = ccxt.binance({
-            'options': {'defaultType': 'future'},
+        exchange = ccxt.bybit({
+            'options': {'defaultType': 'swap'},
             'enableRateLimit': True
         })
         exchange.load_markets()
@@ -186,16 +198,19 @@ def initialize_exchange():
     except Exception as e:
         logging.error(f"Direct connection failed: {e}")
         raise Exception("All proxies and direct connection failed.")
+
 app = Flask(__name__)
 sent_signals = {}
 open_trades = {}
 closed_trades = []
 last_summary_time = 0
+
 try:
     exchange, proxies = initialize_exchange()
 except Exception as e:
     logging.error(f"Failed to initialize exchange: {e}")
     exit(1)
+
 # === CANDLE HELPERS ===
 def is_bullish(c): return c[4] > c[1]
 def is_bearish(c): return c[4] < c[1]
@@ -210,6 +225,7 @@ def upper_wick_pct(c):
     elif is_bearish(c) and (c[1] - c[4]) != 0:
         return (c[2] - c[1]) / (c[1] - c[4]) * 100
     return 0
+
 def analyze_first_small_candle(candle, pattern_type):
     body = body_pct(candle)
     upper_wick = (candle[2] - max(candle[1], candle[4])) / candle[1] * 100
@@ -244,6 +260,7 @@ def analyze_first_small_candle(candle, pattern_type):
                 return {'text': f"Neutral\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%", 'status': 'neutral', 'body_pct': body}
         else:
             return {'text': f"Neutral\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%", 'status': 'neutral', 'body_pct': body}
+
 # === EMA ===
 def calculate_ema(candles, period=21):
     closes = [c[4] for c in candles]
@@ -254,12 +271,14 @@ def calculate_ema(candles, period=21):
     for close in closes[period:]:
         ema = (close - ema) * multiplier + ema
     return ema
+
 # === RSI ===
 def calculate_rsi(candles, period=14):
     closes = np.array([c[4] for c in candles])
     if len(closes) < period:
         return None
     return talib.RSI(closes, timeperiod=period)[-1]
+
 # === PRICE ROUNDING ===
 def round_price(symbol, price):
     try:
@@ -270,6 +289,7 @@ def round_price(symbol, price):
     except Exception as e:
         print(f"Error rounding price for {symbol}: {e}")
         return price
+
 # === PATTERN DETECTION ===
 def detect_rising_three(candles):
     c2, c1, c0 = candles[-4], candles[-3], candles[-2]
@@ -287,6 +307,7 @@ def detect_rising_three(candles):
     )
     volume_decreasing = c1[5] > c0[5]
     return big_green and small_red_1 and small_red_0 and volume_decreasing
+
 def detect_falling_three(candles):
     c2, c1, c0 = candles[-4], candles[-3], candles[-2]
     avg_volume = sum(c[5] for c in candles[-6:-1]) / 5
@@ -301,10 +322,12 @@ def detect_falling_three(candles):
     )
     volume_decreasing = c1[5] > c0[5]
     return big_red and small_green_1 and small_green_0 and volume_decreasing
+
 # === SYMBOLS ===
 def get_symbols():
     markets = exchange.load_markets()
-    return [s for s in markets if 'USDT' in s and markets[s]['contract'] and markets[s].get('active') and markets[s].get('info', {}).get('status') == 'TRADING']
+    return [s for s in markets if s.endswith(':USDT') and markets[s]['swap'] and markets[s]['active'] and markets[s].get('info', {}).get('contractStatus') == 'TRADING']
+
 # === CANDLE CLOSE ===
 def get_next_candle_close():
     now = get_ist_time()
@@ -313,6 +336,7 @@ def get_next_candle_close():
     if seconds_to_next < 5:
         seconds_to_next += 15 * 60
     return time.time() + seconds_to_next
+
 # === TP AND SL CHECK AND DCA ===
 def check_tp():
     global closed_trades
@@ -484,6 +508,7 @@ def check_tp():
         except Exception as e:
             logging.error(f"TP/SL/DCA loop error: {e}")
             time.sleep(5)
+
 # === PROCESS SYMBOL ===
 def process_symbol(symbol, alert_queue):
     try:
@@ -597,21 +622,24 @@ def process_symbol(symbol, alert_queue):
         time.sleep(5)
     except Exception as e:
         logging.error(f"Error on {symbol}: {e}")
+
 # === PROCESS BATCH ===
 def process_batch(symbols, alert_queue):
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_symbol = {executor.submit(process_symbol, symbol, alert_queue): symbol for symbol in symbols}
         for future in as_completed(future_to_symbol):
             future.result()
+
 # === SCAN LOOP ===
 def scan_loop():
     global closed_trades, last_summary_time
     load_trades()
     symbols = get_symbols()
-    print(f"Scanning {len(symbols)} Binance Futures symbols...")
+    print(f"Scanning {len(symbols)} Bybit Futures symbols...")
     alert_queue = queue.Queue()
     chunk_size = math.ceil(len(symbols) / NUM_CHUNKS)
     symbol_chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
+
     def send_alerts():
         while True:
             try:
@@ -695,6 +723,7 @@ def scan_loop():
             except Exception as e:
                 logging.error(f"Alert thread error: {e}")
                 time.sleep(1)
+
     threading.Thread(target=send_alerts, daemon=True).start()
     threading.Thread(target=check_tp, daemon=True).start()
     while True:
@@ -713,7 +742,6 @@ def scan_loop():
         current_time = time.time()
         if current_time - last_summary_time >= SUMMARY_INTERVAL:
             all_closed_trades = load_closed_trades()
-            # Calculate summary stats
             if all_closed_trades:
                 total_trades = len(all_closed_trades)
                 total_pnl = sum(trade['pnl'] for trade in all_closed_trades)
@@ -721,14 +749,6 @@ def scan_loop():
                 wins = [t for t in all_closed_trades if t['pnl'] > 0]
                 win_rate = (len(wins) / total_trades * 100) if total_trades > 0 else 0
                 avg_pnl = total_pnl / total_trades if total_trades > 0 else 0
-                
-                # Breakdown by category
-                cat_breakdown = {}
-                for trade in all_closed_trades:
-                    cat = trade['category']
-                    cat_breakdown[cat] = cat_breakdown.get(cat, {'count': 0, 'pnl': 0})
-                    cat_breakdown[cat]['count'] += 1
-                    cat_breakdown[cat]['pnl'] += trade['pnl']
                 
                 summary_msg = (
                     f"📊 **PNL SUMMARY** (Last Hour)\n"
@@ -747,10 +767,12 @@ def scan_loop():
                 send_telegram("📊 No closed trades in the last hour.", parse_mode='Markdown')
             last_summary_time = current_time
             closed_trades = []
+
 # === FLASK ===
 @app.route('/')
 def home():
     return "Rising & Falling Three Pattern Bot is Live!"
+
 # === RUN ===
 def run_bot():
     global last_summary_time
@@ -761,5 +783,6 @@ def run_bot():
     send_telegram(startup_msg)
     threading.Thread(target=scan_loop, daemon=True).start()
     app.run(host='0.0.0.0', port=8080)
+
 if __name__ == "__main__":
     run_bot()
