@@ -102,13 +102,13 @@ def load_closed_trades():
         return []
 
 # === TELEGRAM ===
-def send_telegram(msg, parse_mode=None, reply_markup=None):
+def send_telegram(msg, parse_mode=None, slump_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {'chat_id': CHAT_ID, 'text': msg}
     if parse_mode:
         data['parse_mode'] = parse_mode
-    if reply_markup:
-        data['reply_markup'] = json.dumps(reply_markup)
+    if slump_markup:
+        data['slump_markup'] = json.dumps(slump_markup)
     try:
         response = requests.post(url, data=data, timeout=5).json()
         if response.get('ok'):
@@ -648,7 +648,7 @@ def scan_loop():
                                     del open_trades[sym]
                                     save_trades()
                                     mid = send_telegram(msg, parse_mode='Markdown')
-                                   if mid and symbol not in open_trades:
+                                    if mid and symbol not in open_trades:
                                         trade = {
                                             'side': side,
                                             'entry': entry_price,
