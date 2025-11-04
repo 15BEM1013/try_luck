@@ -13,8 +13,6 @@ import os
 import talib
 import numpy as np
 import logging
-import random
-
 # === CONFIG ===
 BOT_TOKEN = '7662307654:AAG5-juB1faNaFZfC8zjf4LwlZMzs6lEmtE'
 CHAT_ID = '655537138'
@@ -46,39 +44,44 @@ SUMMARY_INTERVAL = 3600
 ADD_LEVELS = [(0.015, 5.0), (0.03, 10.0)]
 ACCOUNT_SIZE = 1000.0
 MAX_RISK_PCT = 4.5 / 100
+# === PROXY CONFIGURATION ===
 PROXY_LIST = [
-    {'host': '45.152.121.223', 'port': 1080, 'username': 'vzyfsrzp', 'password': 'mwsfv5e6j1stz5v6'},
-    {'host': '104.144.233.81', 'port': 1080, 'username': 'vzyfsrzp', 'password': 'mwsfv5e6j1stz5v6'},
-    {'host': '45.41.178.83', 'port': 1080, 'username': 'vzyfsrzp', 'password': 'mwsfv5e6j1stz5v6'},
-    {'host': '209.127.168.127', 'port': 1080, 'username': 'vzyfsrzp', 'password': 'mwsfv5e6j1stz5v6'},
-    {'host': '209.127.147.135', 'port': 1080, 'username': 'vzyfsrzp', 'password': 'mwsfv5e6j1stz5v6'},
-    {'host': '104.144.139.79', 'port': 1080, 'username': 'vzyfsrzp', 'password': 'mwsfv5e6j1stz5v6'},
-    {'host': '104.144.34.143', 'port': 1080, 'username': 'vzyfsrzp', 'password': 'mwsfv5e6j1stz5v6'},
-    {'host': '209.127.154.147', 'port': 1080, 'username': 'vzyfsrzp', 'password': 'mwsfv5e6j1stz5v6'},
-    {'host': '45.41.176.210', 'port': 1080, 'username': 'vzyfsrzp', 'password': 'mwsfv5e6j1stz5v6'},
-    {'host': '45.152.122.212', 'port': 1080, 'username': 'vzyfsrzp', 'password': 'mwsfv5e6j1stz5v6'}
+    {'host': '107.150.41.226', 'port': 24881, 'username': None, 'password': None},  # US
+    {'host': '87.98.184.249', 'port': 2222, 'username': None, 'password': None},    # Germany (EU)
+    {'host': '173.212.215.22', 'port': 7070, 'username': None, 'password': None},   # Romania (EU)
+    {'host': '47.254.70.132', 'port': 1111, 'username': None, 'password': None},    # US (AWS)
+    {'host': '96.126.98.244', 'port': 9090, 'username': None, 'password': None},    # US
+    {'host': '156.244.15.246', 'port': 1100, 'username': None, 'password': None},   # US
+    {'host': '31.128.41.253', 'port': 28080, 'username': None, 'password': None},   # Ukraine (EU-adjacent)
+    {'host': '176.108.246.18', 'port': 10804, 'username': None, 'password': None},  # Russia (backup)
+    {'host': '217.25.90.44', 'port': 5050, 'username': None, 'password': None},     # Russia (backup)
+    {'host': '185.193.89.69', 'port': 2285, 'username': None, 'password': None},    # EU-ish
 ]
-
+def get_proxy_config(proxy):
+    if proxy.get('username') and proxy.get('password'):
+        auth = f"{proxy['username']}:{proxy['password']}@"
+    else:
+        auth = ""
+    return {
+        "http": f"http://{auth}{proxy['host']}:{proxy['port']}",
+        "https": f"http://{auth}{proxy['host']}:{proxy['port']}"
+    }
 # === CONFIGURE LOGGING ===
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
 # === THREAD LOCK ===
 trade_lock = threading.Lock()
-
 # === TIME ZONE HELPER ===
 def get_ist_time():
     ist = pytz.timezone('Asia/Kolkata')
     return datetime.now(ist)
-
 # === TRADE PERSISTENCE ===
 def save_trades():
     try:
         with open(TRADE_FILE, 'w') as f:
             json.dump(open_trades, f, default=str)
-        logging.info(f"Trades saved to {TRADE_FILE}")
+        print(f"Trades saved to {TRADE_FILE}")
     except Exception as e:
-        logging.error(f"Error saving trades: {e}")
-
+        print(f"Error saving trades: {e}")
 def load_trades():
     global open_trades
     try:
@@ -86,11 +89,10 @@ def load_trades():
             with open(TRADE_FILE, 'r') as f:
                 loaded = json.load(f)
                 open_trades = {k: v for k, v in loaded.items()}
-            logging.info(f"Loaded {len(open_trades)} trades from {TRADE_FILE}")
+            print(f"Loaded {len(open_trades)} trades from {TRADE_FILE}")
     except Exception as e:
-        logging.error(f"Error loading trades: {e}")
+        print(f"Error loading trades: {e}")
         open_trades = {}
-
 def save_closed_trades(closed_trade):
     try:
         all_closed_trades = []
@@ -100,10 +102,9 @@ def save_closed_trades(closed_trade):
         all_closed_trades.append(closed_trade)
         with open(CLOSED_TRADE_FILE, 'w') as f:
             json.dump(all_closed_trades, f, default=str)
-        logging.info(f"Closed trade saved to {CLOSED_TRADE_FILE}")
+        print(f"Closed trade saved to {CLOSED_TRADE_FILE}")
     except Exception as e:
-        logging.error(f"Error saving closed trades: {e}")
-
+        print(f"Error saving closed trades: {e}")
 def load_closed_trades():
     try:
         if os.path.exists(CLOSED_TRADE_FILE):
@@ -111,13 +112,8 @@ def load_closed_trades():
                 return json.load(f)
         return []
     except Exception as e:
-        logging.error(f"Error loading closed trades: {e}")
+        print(f"Error loading closed trades: {e}")
         return []
-
-# === PROXY HELPER ===
-def get_random_proxy():
-    return random.choice(PROXY_LIST)
-
 # === TELEGRAM ===
 def send_telegram(msg, parse_mode=None, reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -126,106 +122,68 @@ def send_telegram(msg, parse_mode=None, reply_markup=None):
         data['parse_mode'] = parse_mode
     if reply_markup:
         data['reply_markup'] = json.dumps(reply_markup)
-    for attempt in range(3):
-        proxy = get_random_proxy()
-        proxy_url = f"socks5://{proxy['username']}:{proxy['password']}@{proxy['host']}:{proxy['port']}"
-        proxies = {'http': proxy_url, 'https': proxy_url}
-        try:
-            response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
-            if response.get('ok'):
-                logging.info(f"Telegram sent via proxy {proxy['host']}:{proxy['port']}: {msg}")
-                return response.get('result', {}).get('message_id')
-            else:
-                logging.error(f"Telegram response error: {response}")
-        except Exception as e:
-            logging.error(f"Telegram error with proxy {proxy['host']}:{proxy['port']}: {e}")
-            if attempt < 2:
-                time.sleep(2 ** attempt)
-                continue
-    # Fallback to direct connection
     try:
-        response = requests.post(url, data=data, timeout=5).json()
-        if response.get('ok'):
-            logging.info(f"Telegram sent via direct connection: {msg}")
-            return response.get('result', {}).get('message_id')
-        else:
-            logging.error(f"Telegram direct connection response error: {response}")
+        response = requests.post(url, data=data, timeout=5, proxies=proxies).json()
+        print(f"Telegram sent: {msg}")
+        return response.get('result', {}).get('message_id')
     except Exception as e:
-        logging.error(f"Telegram direct connection error: {e}")
-    logging.error("All Telegram attempts failed")
-    return None
-
+        print(f"Telegram error: {e}")
+        return None
 def edit_telegram_message(message_id, new_text, parse_mode=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
     if parse_mode:
         data['parse_mode'] = parse_mode
-    for attempt in range(3):
-        proxy = get_random_proxy()
-        proxy_url = f"socks5://{proxy['username']}:{proxy['password']}@{proxy['host']}:{proxy['port']}"
-        proxies = {'http': proxy_url, 'https': proxy_url}
-        try:
-            response = requests.post(url, data=data, proxies=proxies, timeout=5).json()
-            if response.get('ok'):
-                logging.info(f"Telegram updated via proxy {proxy['host']}:{proxy['port']}: {new_text}")
-                return
-            else:
-                logging.error(f"Telegram edit response error: {response}")
-        except Exception as e:
-            logging.error(f"Telegram edit error with proxy {proxy['host']}:{proxy['port']}: {e}")
-            if attempt < 2:
-                time.sleep(2 ** attempt)
-                continue
-    # Fallback to direct connection
     try:
-        response = requests.post(url, data=data, timeout=5).json()
-        if response.get('ok'):
-            logging.info(f"Telegram updated via direct connection: {new_text}")
-        else:
-            logging.error(f"Telegram direct connection edit response error: {response}")
+        requests.post(url, data=data, timeout=5, proxies=proxies)
+        print(f"Telegram updated: {new_text}")
     except Exception as e:
-        logging.error(f"Telegram direct connection edit error: {e}")
-    logging.error("All Telegram edit attempts failed")
-
+        print(f"Edit error: {e}")
 # === INIT ===
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 def initialize_exchange():
-    for proxy in random.sample(PROXY_LIST, len(PROXY_LIST)):  # Shuffle proxies for better distribution
-        for attempt in range(2):
-            try:
-                exchange = ccxt.binance({
-                    'options': {'defaultType': 'future'},
-                    'enableRateLimit': True,
-                    'proxies': {
-                        'http': f"socks5://{proxy['username']}:{proxy['password']}@{proxy['host']}:{proxy['port']}",
-                        'https': f"socks5://{proxy['username']}:{proxy['password']}@{proxy['host']}:{proxy['port']}"
-                    }
-                })
-                exchange.load_markets()
-                logging.info(f"Successfully connected to Binance using proxy {proxy['host']}:{proxy['port']}")
-                return exchange
-            except Exception as e:
-                logging.error(f"Failed to initialize exchange with proxy {proxy['host']}:{proxy['port']} (attempt {attempt+1}): {e}")
-                time.sleep(2 ** attempt)
-    # Fallback to direct connection
+    for proxy in PROXY_LIST:
+        try:
+            proxies = get_proxy_config(proxy)
+            logging.info(f"Trying proxy: {proxy['host']}:{proxy['port']}")
+            session = requests.Session()
+            retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+            session.mount('https://', HTTPAdapter(pool_maxsize=20, max_retries=retries))
+            exchange = ccxt.binance({
+                'options': {'defaultType': 'future'},
+                'proxies': proxies,
+                'enableRateLimit': True,
+                'session': session
+            })
+            exchange.load_markets()
+            logging.info(f"Successfully connected using proxy: {proxy['host']}:{proxy['port']}")
+            return exchange, proxies
+        except Exception as e:
+            logging.error(f"Failed to connect with proxy {proxy['host']}:{proxy['port']}: {e}")
+            continue
+    logging.error("All proxies failed. Falling back to direct connection.")
     try:
         exchange = ccxt.binance({
             'options': {'defaultType': 'future'},
             'enableRateLimit': True
         })
         exchange.load_markets()
-        logging.info("Successfully connected to Binance using direct connection")
-        return exchange
+        logging.info("Successfully connected using direct connection.")
+        return exchange, None
     except Exception as e:
-        logging.error(f"Failed to initialize exchange with direct connection: {e}")
-    return None
-
+        logging.error(f"Direct connection failed: {e}")
+        raise Exception("All proxies and direct connection failed.")
 app = Flask(__name__)
 sent_signals = {}
 open_trades = {}
 closed_trades = []
 last_summary_time = 0
-exchange = None
-
+try:
+    exchange, proxies = initialize_exchange()
+except Exception as e:
+    logging.error(f"Failed to initialize exchange: {e}")
+    exit(1)
 # === CANDLE HELPERS ===
 def is_bullish(c): return c[4] > c[1]
 def is_bearish(c): return c[4] < c[1]
@@ -240,7 +198,6 @@ def upper_wick_pct(c):
     elif is_bearish(c) and (c[1] - c[4]) != 0:
         return (c[2] - c[1]) / (c[1] - c[4]) * 100
     return 0
-
 def analyze_first_small_candle(candle, pattern_type):
     body = body_pct(candle)
     upper_wick = (candle[2] - max(candle[1], candle[4])) / candle[1] * 100
@@ -275,7 +232,6 @@ def analyze_first_small_candle(candle, pattern_type):
                 return {'text': f"Neutral\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%", 'status': 'neutral', 'body_pct': body}
         else:
             return {'text': f"Neutral\nUpper wick: {upper_wick:.2f}%\nLower wick: {lower_wick:.2f}%\nBody: {body:.2f}%", 'status': 'neutral', 'body_pct': body}
-
 # === EMA ===
 def calculate_ema(candles, period=21):
     closes = [c[4] for c in candles]
@@ -286,29 +242,22 @@ def calculate_ema(candles, period=21):
     for close in closes[period:]:
         ema = (close - ema) * multiplier + ema
     return ema
-
 # === RSI ===
 def calculate_rsi(candles, period=14):
     closes = np.array([c[4] for c in candles])
     if len(closes) < period:
         return None
     return talib.RSI(closes, timeperiod=period)[-1]
-
 # === PRICE ROUNDING ===
 def round_price(symbol, price):
     try:
         market = exchange.market(symbol)
-        price_precision = market.get('precision', {}).get('price', 8)
-        for f in market['info'].get('filters', []):
-            if f['filterType'] == 'PRICE_FILTER':
-                tick_size = float(f['tickSize'])
-                price_precision = int(round(-math.log10(tick_size)))
-                break
-        return round(price, price_precision)
+        tick_size = float(market['info']['filters'][0]['tickSize'])
+        precision = int(round(-math.log10(tick_size)))
+        return round(price, precision)
     except Exception as e:
-        logging.error(f"Error rounding price for {symbol}: {e}")
+        print(f"Error rounding price for {symbol}: {e}")
         return price
-
 # === PATTERN DETECTION ===
 def detect_rising_three(candles):
     c2, c1, c0 = candles[-4], candles[-3], candles[-2]
@@ -326,7 +275,6 @@ def detect_rising_three(candles):
     )
     volume_decreasing = c1[5] > c0[5]
     return big_green and small_red_1 and small_red_0 and volume_decreasing
-
 def detect_falling_three(candles):
     c2, c1, c0 = candles[-4], candles[-3], candles[-2]
     avg_volume = sum(c[5] for c in candles[-6:-1]) / 5
@@ -341,31 +289,10 @@ def detect_falling_three(candles):
     )
     volume_decreasing = c1[5] > c0[5]
     return big_red and small_green_1 and small_green_0 and volume_decreasing
-
 # === SYMBOLS ===
 def get_symbols():
-    global exchange
-    if exchange is None:
-        exchange = initialize_exchange()
-        if exchange is None:
-            logging.error("Failed to initialize exchange in get_symbols")
-            return []
-    try:
-        markets = exchange.load_markets()
-        symbols = [
-            s for s in markets
-            if s.endswith('USDT') and
-            markets[s].get('future') and
-            markets[s].get('active') and
-            markets[s].get('info', {}).get('status') == 'TRADING' and
-            markets[s].get('info', {}).get('contractType') == 'PERPETUAL'
-        ]
-        logging.info(f"Fetched {len(symbols)} USDT-margined perpetual futures symbols: {symbols[:5]}...")
-        return symbols
-    except Exception as e:
-        logging.error(f"Error fetching symbols: {e}")
-        return []
-
+    markets = exchange.load_markets()
+    return [s for s in markets if 'USDT' in s and markets[s]['contract'] and markets[s].get('active') and markets[s].get('info', {}).get('status') == 'TRADING']
 # === CANDLE CLOSE ===
 def get_next_candle_close():
     now = get_ist_time()
@@ -374,17 +301,10 @@ def get_next_candle_close():
     if seconds_to_next < 5:
         seconds_to_next += 15 * 60
     return time.time() + seconds_to_next
-
 # === TP AND SL CHECK AND DCA ===
 def check_tp():
-    global closed_trades, exchange
+    global closed_trades
     while True:
-        if exchange is None:
-            logging.error("Exchange not initialized in check_tp, retrying...")
-            exchange = initialize_exchange()
-            if exchange is None:
-                time.sleep(60)
-                continue
         try:
             with trade_lock:
                 for sym, trade in list(open_trades.items()):
@@ -445,7 +365,7 @@ def check_tp():
                                         dca_lines.append(f"DCA {j+1} {dca_price} tp-{dca_tp} ({status_formatted})")
                                     sl_price = round_price(sym, average_entry * (1 - SL_PCT) if trade['side'] == 'buy' else average_entry * (1 + SL_PCT))
                                     new_msg = (
-                                        f"{sym.replace('USDT', '/USDT')} - {'BUY' if trade['side'] == 'buy' else 'SELL'}\n"
+                                        f"{sym} - {'BUY' if trade['side'] == 'buy' else 'SELL'}\n"
                                         f"Initial entry: {trade['initial_entry']}\n"
                                         f"Average entry: {trade['average_entry']}\n"
                                         f"Total invested: ${trade['total_invested']:.2f}\n"
@@ -529,7 +449,7 @@ def check_tp():
                                 dca_lines.append(f"DCA {j+1} {dca_price} tp-{dca_tp} ({status_formatted})")
                             sl_price = round_price(sym, trade['average_entry'] * (1 - SL_PCT) if trade['side'] == 'buy' else trade['average_entry'] * (1 + SL_PCT))
                             new_msg = (
-                                f"{sym.replace('USDT', '/USDT')} - {'BUY' if trade['side'] == 'buy' else 'SELL'}\n"
+                                f"{sym} - {'BUY' if trade['side'] == 'buy' else 'SELL'}\n"
                                 f"Initial entry: {trade['initial_entry']}\n"
                                 f"Average entry: {trade['average_entry']}\n"
                                 f"Total invested: ${trade['total_invested']:.2f}\n"
@@ -552,13 +472,8 @@ def check_tp():
         except Exception as e:
             logging.error(f"TP/SL/DCA loop error: {e}")
             time.sleep(5)
-
 # === PROCESS SYMBOL ===
 def process_symbol(symbol, alert_queue):
-    global exchange
-    if exchange is None:
-        logging.error(f"Exchange not initialized for {symbol}, skipping...")
-        return
     try:
         for attempt in range(3):
             try:
@@ -569,7 +484,7 @@ def process_symbol(symbol, alert_queue):
                     break
                 time.sleep(0.5)
             except ccxt.NetworkError as e:
-                logging.error(f"Network error on {symbol}: {e}")
+                print(f"Network error on {symbol}: {e}")
                 time.sleep(2 ** attempt)
                 continue
         ema21 = calculate_ema(candles, period=21)
@@ -613,7 +528,7 @@ def process_symbol(symbol, alert_queue):
                 dca_lines.append(f"DCA {i+1} {dca_price} tp-{dca_tp} (Pending)")
             sl_price = round_price(symbol, entry_price * (1 + SL_PCT))
             msg = (
-                f"{symbol.replace('USDT', '/USDT')} - SELL\n"
+                f"{symbol} - SELL\n"
                 f"Initial entry: {entry_price}\n"
                 f"Average entry: {entry_price}\n"
                 f"Total invested: ${CAPITAL:.2f}\n"
@@ -656,7 +571,7 @@ def process_symbol(symbol, alert_queue):
                 dca_lines.append(f"DCA {i+1} {dca_price} tp-{dca_tp} (Pending)")
             sl_price = round_price(symbol, entry_price * (1 - SL_PCT))
             msg = (
-                f"{symbol.replace('USDT', '/USDT')} - BUY\n"
+                f"{symbol} - BUY\n"
                 f"Initial entry: {entry_price}\n"
                 f"Average entry: {entry_price}\n"
                 f"Total invested: ${CAPITAL:.2f}\n"
@@ -670,19 +585,21 @@ def process_symbol(symbol, alert_queue):
         time.sleep(5)
     except Exception as e:
         logging.error(f"Error on {symbol}: {e}")
-
 # === PROCESS BATCH ===
 def process_batch(symbols, alert_queue):
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_symbol = {executor.submit(process_symbol, symbol, alert_queue): symbol for symbol in symbols}
         for future in as_completed(future_to_symbol):
             future.result()
-
 # === SCAN LOOP ===
 def scan_loop():
-    global closed_trades, last_summary_time, exchange
+    global closed_trades, last_summary_time
     load_trades()
+    symbols = get_symbols()
+    print(f"Scanning {len(symbols)} Binance Futures symbols...")
     alert_queue = queue.Queue()
+    chunk_size = math.ceil(len(symbols) / NUM_CHUNKS)
+    symbol_chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
     def send_alerts():
         while True:
             try:
@@ -722,7 +639,7 @@ def scan_loop():
                         if CATEGORY_PRIORITY[category] > lowest_priority:
                             for sym, trade in list(open_trades.items()):
                                 if CATEGORY_PRIORITY[trade['category']] == lowest_priority:
-                                    edit_telegram_message(trade['msg_id'], f"{sym.replace('USDT', '/USDT')} - Trade canceled for higher-priority signal.")
+                                    edit_telegram_message(trade['msg_id'], f"{sym} - Trade canceled for higher-priority signal.")
                                     del open_trades[sym]
                                     save_trades()
                                     mid = send_telegram(msg, parse_mode='Markdown')
@@ -769,32 +686,22 @@ def scan_loop():
     threading.Thread(target=send_alerts, daemon=True).start()
     threading.Thread(target=check_tp, daemon=True).start()
     while True:
-        if exchange is None:
-            logging.error("Exchange not initialized, attempting to reconnect...")
-            exchange = initialize_exchange()
-            if exchange is None:
-                send_telegram("⚠️ Failed to connect to Binance. Retrying in 60 seconds...")
-                time.sleep(60)
-                continue
-        symbols = get_symbols()
-        if not symbols:
-            logging.error("No symbols available to scan. Retrying in 60 seconds...")
-            send_telegram("⚠️ No symbols fetched from Binance. Retrying in 60 seconds...")
-            time.sleep(60)
-            continue
-        chunk_size = max(1, math.ceil(len(symbols) / NUM_CHUNKS))
-        symbol_chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
+        next_close = get_next_candle_close()
+        wait_time = max(0, next_close - time.time())
+        print(f"Waiting {wait_time:.1f} seconds for next 15m candle close...")
+        time.sleep(wait_time)
         for i, chunk in enumerate(symbol_chunks):
-            logging.info(f"Processing batch {i+1}/{NUM_CHUNKS}...")
+            print(f"Processing batch {i+1}/{NUM_CHUNKS}...")
             process_batch(chunk, alert_queue)
             if i < NUM_CHUNKS - 1:
                 time.sleep(BATCH_DELAY)
-        logging.info("Scan complete.")
+        print("Scan complete.")
         num_open = len(open_trades)
-        logging.info(f"Number of open trades: {num_open}")
+        print(f"Number of open trades: {num_open}")
         current_time = time.time()
         if current_time - last_summary_time >= SUMMARY_INTERVAL:
             all_closed_trades = load_closed_trades()
+            # Calculate summary stats
             if all_closed_trades:
                 total_trades = len(all_closed_trades)
                 total_pnl = sum(trade['pnl'] for trade in all_closed_trades)
@@ -802,12 +709,15 @@ def scan_loop():
                 wins = [t for t in all_closed_trades if t['pnl'] > 0]
                 win_rate = (len(wins) / total_trades * 100) if total_trades > 0 else 0
                 avg_pnl = total_pnl / total_trades if total_trades > 0 else 0
+                
+                # Breakdown by category
                 cat_breakdown = {}
                 for trade in all_closed_trades:
                     cat = trade['category']
                     cat_breakdown[cat] = cat_breakdown.get(cat, {'count': 0, 'pnl': 0})
                     cat_breakdown[cat]['count'] += 1
                     cat_breakdown[cat]['pnl'] += trade['pnl']
+                
                 summary_msg = (
                     f"📊 **PNL SUMMARY** (Last Hour)\n"
                     f"Total Trades: {total_trades}\n"
@@ -819,52 +729,25 @@ def scan_loop():
                 for cat, stats in cat_breakdown.items():
                     avg_cat_pnl = stats['pnl'] / stats['count']
                     summary_msg += f"{cat}: {stats['count']} trades, ${stats['pnl']:.2f} ({avg_cat_pnl:.2f}/trade)\n"
+                
                 send_telegram(summary_msg, parse_mode='Markdown')
             else:
                 send_telegram("📊 No closed trades in the last hour.", parse_mode='Markdown')
             last_summary_time = current_time
             closed_trades = []
-        next_close = get_next_candle_close()
-        wait_time = max(0, next_close - time.time())
-        logging.info(f"Waiting {wait_time:.1f} seconds for next 15m candle close...")
-        time.sleep(wait_time)
-
 # === FLASK ===
 @app.route('/')
 def home():
     return "Rising & Falling Three Pattern Bot is Live!"
-
-@app.route('/health')
-def health():
-    global exchange
-    status = "healthy" if exchange else "waiting for Binance connection"
-    return {"status": status, "time": get_ist_time().isoformat()}
-
 # === RUN ===
 def run_bot():
-    global last_summary_time, exchange
-    try:
-        load_trades()
-        num_open = len(open_trades)
-        last_summary_time = time.time()
-        startup_msg = f"BOT STARTED\nNumber of open trades: {num_open}"
-        send_telegram(startup_msg)
-        exchange = initialize_exchange()
-        if exchange is None:
-            logging.warning("Initial Binance connection failed, starting scan loop anyway...")
-            send_telegram("⚠️ Initial Binance connection failed. Bot will retry in scan loop.")
-        threading.Thread(target=scan_loop, daemon=True).start()
-        logging.info("Starting Flask server on 0.0.0.0:8080")
-        app.run(host='0.0.0.0', port=8080, debug=False)
-    except Exception as e:
-        logging.error(f"Error in run_bot: {e}")
-        send_telegram(f"⚠️ Bot error: {str(e)}")
-        raise
-
+    global last_summary_time
+    load_trades()
+    num_open = len(open_trades)
+    last_summary_time = time.time()
+    startup_msg = f"BOT STARTED\nNumber of open trades: {num_open}"
+    send_telegram(startup_msg)
+    threading.Thread(target=scan_loop, daemon=True).start()
+    app.run(host='0.0.0.0', port=8080)
 if __name__ == "__main__":
-    try:
-        run_bot()
-    except Exception as e:
-        logging.error(f"Fatal error in main: {e}")
-        send_telegram(f"🚨 Fatal bot error: {str(e)}")
-        app.run(host='0.0.0.0', port=8080, debug=False)  # Ensure Flask starts even on failure
+    run_bot()
