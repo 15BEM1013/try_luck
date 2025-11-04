@@ -46,40 +46,6 @@ ADD_LEVELS = [(0.015, 5.0), (0.03, 10.0)]
 ACCOUNT_SIZE = 1000.0
 MAX_RISK_PCT = 4.5 / 100
 
-# === PROXY CONFIGURATION ===
-PROXY_LIST = [
-    {'host': '142.111.48.253', 'port': 7030, 'username': 'wwlzwbfi', 'password': 'x7o3f7md9g6j'},
-    {'host': '31.59.20.176', 'port': 6754, 'username': 'wwlzwbfi', 'password': 'x7o3f7md9g6j'},
-    {'host': '23.95.150.145', 'port': 6114, 'username': 'wwlzwbfi', 'password': 'x7o3f7md9g6j'},
-    {'host': '198.23.239.134', 'port': 6540, 'username': 'wwlzwbfi', 'password': 'x7o3f7md9g6j'},
-    {'host': '45.38.107.97', 'port': 6014, 'username': 'wwlzwbfi', 'password': 'x7o3f7md9g6j'},
-    {'host': '107.172.163.27', 'port': 6543, 'username': 'wwlzwbfi', 'password': 'x7o3f7md9g6j'},
-    {'host': '64.137.96.74', 'port': 6641, 'username': 'wwlzwbfi', 'password': 'x7o3f7md9g6j'},
-    {'host': '216.10.27.159', 'port': 6837, 'username': 'wwlzwbfi', 'password': 'x7o3f7md9g6j'},
-    {'host': '142.111.67.146', 'port': 5611, 'username': 'wwlzwbfi', 'password': 'x7o3f7md9g6j'},
-    {'host': '142.147.128.2', 'port': 6593, 'username': 'wwlzwbfi', 'password': 'x7o3f7md9g6j'},
-    {'host': '162.240.19.30', 'port': 80, 'username': None, 'password': None},
-    {'host': '18.60.222.217', 'port': 57032, 'username': None, 'password': None},
-    {'host': '217.138.18.75', 'port': 8080, 'username': None, 'password': None},
-    {'host': '38.54.71.67', 'port': 80, 'username': None, 'password': None},
-    {'host': '81.90.149.188', 'port': 3128, 'username': None, 'password': None},
-    {'host': '162.214.165.203', 'port': 80, 'username': None, 'password': None},
-    {'host': '138.124.49.149', 'port': 10808, 'username': None, 'password': None},
-    {'host': '188.40.57.101', 'port': 80, 'username': None, 'password': None},
-    {'host': '202.130.218.193', 'port': 1080, 'username': None, 'password': None},
-    {'host': '192.73.244.36', 'port': 80, 'username': None, 'password': None},
-]
-
-def get_proxy_config(proxy):
-    if proxy.get('username') and proxy.get('password'):
-        auth = f"{proxy['username']}:{proxy['password']}@"
-    else:
-        auth = ""
-    return {
-        "http": f"http://{auth}{proxy['host']}:{proxy['port']}",
-        "https": f"http://{auth}{proxy['host']}:{proxy['port']}"
-    }
-
 # === CONFIGURE LOGGING ===
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -143,29 +109,15 @@ def send_telegram(msg, parse_mode=None, reply_markup=None):
         data['parse_mode'] = parse_mode
     if reply_markup:
         data['reply_markup'] = json.dumps(reply_markup)
-    for proxy in PROXY_LIST:
-        try:
-            proxy_config = get_proxy_config(proxy)
-            logging.info(f"Trying Telegram with proxy: {proxy['host']}:{proxy['port']}")
-            response = requests.post(url, data=data, timeout=5, proxies=proxy_config).json()
-            if response.get('ok'):
-                print(f"Telegram sent: {msg}")
-                return response.get('result', {}).get('message_id')
-            else:
-                logging.error(f"Telegram response error: {response}")
-        except Exception as e:
-            logging.error(f"Telegram error with proxy {proxy['host']}:{proxy['port']}: {e}")
-            continue
-    logging.warning("All proxies failed for Telegram. Trying direct connection.")
     try:
         response = requests.post(url, data=data, timeout=5).json()
         if response.get('ok'):
-            print(f"Telegram sent (direct): {msg}")
+            print(f"Telegram sent: {msg}")
             return response.get('result', {}).get('message_id')
         else:
-            logging.error(f"Direct Telegram response error: {response}")
+            logging.error(f"Telegram response error: {response}")
     except Exception as e:
-        logging.error(f"Direct Telegram error: {e}")
+        logging.error(f"Telegram error: {e}")
     return None
 
 def edit_telegram_message(message_id, new_text, parse_mode=None):
@@ -173,65 +125,28 @@ def edit_telegram_message(message_id, new_text, parse_mode=None):
     data = {'chat_id': CHAT_ID, 'message_id': message_id, 'text': new_text}
     if parse_mode:
         data['parse_mode'] = parse_mode
-    for proxy in PROXY_LIST:
-        try:
-            proxy_config = get_proxy_config(proxy)
-            logging.info(f"Trying Telegram edit with proxy: {proxy['host']}:{proxy['port']}")
-            response = requests.post(url, data=data, timeout=5, proxies=proxy_config).json()
-            if response.get('ok'):
-                print(f"Telegram updated: {new_text}")
-                return
-            else:
-                logging.error(f"Telegram edit response error: {response}")
-        except Exception as e:
-            logging.error(f"Telegram edit error with proxy {proxy['host']}:{proxy['port']}: {e}")
-            continue
-    logging.warning("All proxies failed for Telegram edit. Trying direct connection.")
     try:
         response = requests.post(url, data=data, timeout=5).json()
         if response.get('ok'):
-            print(f"Telegram updated (direct): {new_text}")
+            print(f"Telegram updated: {new_text}")
         else:
-            logging.error(f"Direct Telegram edit response error: {response}")
+            logging.error(f"Telegram edit response error: {response}")
     except Exception as e:
-        logging.error(f"Direct Telegram edit error: {e}")
+        logging.error(f"Telegram edit error: {e}")
 
 # === INIT ===
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-
 def initialize_exchange():
-    for proxy in PROXY_LIST:
-        try:
-            proxies = get_proxy_config(proxy)
-            logging.info(f"Trying proxy: {proxy['host']}:{proxy['port']}")
-            session = requests.Session()
-            retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-            session.mount('https://', HTTPAdapter(pool_maxsize=20, max_retries=retries))
-            exchange = ccxt.bybit({
-                'options': {'defaultType': 'swap'},
-                'proxies': proxies,
-                'enableRateLimit': True,
-                'session': session
-            })
-            exchange.load_markets()
-            logging.info(f"Successfully connected using proxy: {proxy['host']}:{proxy['port']}")
-            return exchange, proxies
-        except Exception as e:
-            logging.error(f"Failed to connect with proxy {proxy['host']}:{proxy['port']}: {e}")
-            continue
-    logging.error("All proxies failed. Falling back to direct connection.")
     try:
         exchange = ccxt.bybit({
             'options': {'defaultType': 'swap'},
             'enableRateLimit': True
         })
         exchange.load_markets()
-        logging.info("Successfully connected using direct connection.")
-        return exchange, None
+        logging.info("Successfully connected to Bybit using direct connection.")
+        return exchange
     except Exception as e:
-        logging.error(f"Direct connection failed: {e}")
-        raise Exception("All proxies and direct connection failed.")
+        logging.error(f"Failed to initialize exchange: {e}")
+        raise Exception("Direct connection to Bybit failed.")
 
 app = Flask(__name__)
 sent_signals = {}
@@ -240,7 +155,7 @@ closed_trades = []
 last_summary_time = 0
 
 try:
-    exchange, proxies = initialize_exchange()
+    exchange = initialize_exchange()
 except Exception as e:
     logging.error(f"Failed to initialize exchange: {e}")
     exit(1)
@@ -688,7 +603,7 @@ def scan_loop():
         return
     print(f"Scanning {len(symbols)} Bybit Futures symbols...")
     alert_queue = queue.Queue()
-    chunk_size = math.ceil(len(symbols) / NUM_CHUNKS) if symbols else 1
+    chunk_size = max(1, math.ceil(len(symbols) / NUM_CHUNKS))
     symbol_chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
     def send_alerts():
         while True:
@@ -733,7 +648,7 @@ def scan_loop():
                                     del open_trades[sym]
                                     save_trades()
                                     mid = send_telegram(msg, parse_mode='Markdown')
-                                    if mid and symbol not in open_trades:
+                                   if mid and symbol not in open_trades:
                                         trade = {
                                             'side': side,
                                             'entry': entry_price,
@@ -785,7 +700,7 @@ def scan_loop():
             logging.error("No symbols available to scan. Retrying in 60 seconds...")
             time.sleep(60)
             continue
-        chunk_size = math.ceil(len(symbols) / NUM_CHUNKS)
+        chunk_size = max(1, math.ceil(len(symbols) / NUM_CHUNKS))
         symbol_chunks = [symbols[i:i + chunk_size] for i in range(0, len(symbols), chunk_size)]
         for i, chunk in enumerate(symbol_chunks):
             print(f"Processing batch {i+1}/{NUM_CHUNKS}...")
