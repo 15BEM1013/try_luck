@@ -48,6 +48,16 @@ MAX_RISK_PCT = 4.5 / 100
 
 # === PROXY CONFIGURATION ===
 PROXY_LIST = [
+    {'host': '142.111.48.253', 'port': 7030, 'username': 'vmrcabza', 'password': '2tmwim0mjpml'},
+    {'host': '31.59.20.176',   'port': 6754, 'username': 'vmrcabza', 'password': '2tmwim0mjpml'},
+    {'host': '23.95.150.145',  'port': 6114, 'username': 'vmrcabza', 'password': '2tmwim0mjpml'},
+    {'host': '198.23.239.134', 'port': 6540, 'username': 'vmrcabza', 'password': '2tmwim0mjpml'},
+    {'host': '45.38.107.97',   'port': 6014, 'username': 'vmrcabza', 'password': '2tmwim0mjpml'},
+    {'host': '107.172.163.27', 'port': 6543, 'username': 'vmrcabza', 'password': '2tmwim0mjpml'},
+    {'host': '64.137.96.74',   'port': 6641, 'username': 'vmrcabza', 'password': '2tmwim0mjpml'},
+    {'host': '216.10.27.159',  'port': 6837, 'username': 'vmrcabza', 'password': '2tmwim0mjpml'},
+    {'host': '142.111.67.146', 'port': 5611, 'username': 'vmrcabza', 'password': '2tmwim0mjpml'},
+    {'host': '142.147.128.93', 'port': 6593, 'username': 'vmrcabza', 'password': '2tmwim0mjpml'},
     {'host': '142.111.48.253', 'port': 7030, 'username': 'wppxwags', 'password': 'csuwgv7juwh4'},
     {'host': '31.59.20.176',   'port': 6754, 'username': 'wppxwags', 'password': 'csuwgv7juwh4'},
     {'host': '23.95.150.145',  'port': 6114, 'username': 'wppxwags', 'password': 'csuwgv7juwh4'},
