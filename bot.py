@@ -743,5 +743,3 @@ def run_bot():
     app.run(host='0.0.0.0', port=8080)
 if __name__ == "__main__":
     run_bot()
- 
-wha tis the specification in it
