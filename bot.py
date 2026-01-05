@@ -457,7 +457,7 @@ def process_symbol(symbol, alert_queue):
                 category = 'two_cautions'
             side = 'sell'
             entry_price = second_small_candle_close
-            tp = round_price(symbol, first_small_candle_close * (1 - TP_PCT))
+            tp = round_price(symbol, entry_price * (1 - TP_PCT))
             sl = round_price(symbol, entry_price * (1 + SL_PCT))
             tp_distance = (entry_price - tp) / entry_price * 100
             pattern = 'rising'
@@ -497,7 +497,7 @@ def process_symbol(symbol, alert_queue):
                 category = 'two_cautions'
             side = 'buy'
             entry_price = second_small_candle_close
-            tp = round_price(symbol, first_small_candle_close * (1 + TP_PCT))
+            tp = round_price(symbol, entry_price * (1 + TP_PCT))
             sl = round_price(symbol, entry_price * (1 - SL_PCT))
             tp_distance = (tp - entry_price) / entry_price * 100
             pattern = 'falling'
