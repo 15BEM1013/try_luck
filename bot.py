@@ -14,22 +14,7 @@ import talib
 import numpy as np
 import logging
 
-# === CONFIG ===
-BOT_TOKEN = 'import ccxt
-import time
-import threading
-import requests
-from flask import Flask
-from datetime import datetime
-import pytz
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import math
-import queue
-import json
-import os
-import talib
-import numpy as np
-import logging
+
 
 # === CONFIG ===
 BOT_TOKEN = '7402265241:AAHRDxd12LRizl1qTsQggEEoJ-BeWME3ERo'
