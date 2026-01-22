@@ -383,15 +383,29 @@ def check_tp():
                                         else:
                                             dca_price = round_price(sym, initial_entry * (1 - against_pct) if trade['side'] == 'buy' else initial_entry * (1 + against_pct))
                                             dca_lines.append(f"DCA3/SL {dca_price} ({trade['dca_status'][j]})")
+                                    ema_status = trade['ema_status']
+                                    price_ema21_emoji = "✅" if ema_status['price_ema21'] == 'Green' else "⚠️"
+                                    ema9_ema21_emoji = "✅" if ema_status['ema9_ema21'] == 'Green' else "⚠️"
+                                    green_count = sum(1 for v in ema_status.values() if v == 'Green')
+                                    if green_count == 2:
+                                        category_text = "2 green"
+                                    elif green_count == 1:
+                                        category_text = "1 green 1 cautious"
+                                    else:
+                                        category_text = "2 cautious"
                                     new_msg = (
-                                        f"{sym} - {'BUY' if trade['side'] == 'buy' else 'SELL'}\n"
-                                        f"Initial entry: {trade['initial_entry']}\n"
-                                        f"Average entry: {trade['average_entry']}\n"
+                                        f"{sym} - {trade['pattern'].upper()} {'BUY' if trade['side'] == 'buy' else 'SELL'} PATTERN\n"
+                                        f"Above 21 ema - {price_ema21_emoji}\n"
+                                        f"ema 9 above 21 - {ema9_ema21_emoji}\n"
+                                        f"Category: {category_text}\n"
+                                        f"First small candle: {trade['pressure_status']}\n"
+                                        f"{trade['first_candle_analysis'].replace('\n', '\n')}\n"
+                                        f"entry - {trade['average_entry']}\n"
+                                        f"tp - {trade['tp']}\n"
+                                        f"sl - {trade['sl']}\n"
                                         f"Total invested: ${trade['total_invested']:.2f}\n"
                                         f"{'\n'.join(dca_lines)}\n"
                                         f"DCA Added: {', '.join(dca_messages)}\n"
-                                        f"TP: {trade['tp']}\n"
-                                        f"SL: {trade['sl']}"
                                     )
                                     trade['msg'] = new_msg
                                     edit_telegram_message(trade['msg_id'], new_msg)
@@ -482,17 +496,31 @@ def check_tp():
                                 else:
                                     dca_price = round_price(sym, trade['initial_entry'] * (1 - against_pct) if trade['side'] == 'buy' else trade['initial_entry'] * (1 + against_pct))
                                     dca_lines.append(f"DCA3/SL {dca_price} ({trade['dca_status'][j]})")
+                            ema_status = trade['ema_status']
+                            price_ema21_emoji = "✅" if ema_status['price_ema21'] == 'Green' else "⚠️"
+                            ema9_ema21_emoji = "✅" if ema_status['ema9_ema21'] == 'Green' else "⚠️"
+                            green_count = sum(1 for v in ema_status.values() if v == 'Green')
+                            if green_count == 2:
+                                category_text = "2 green"
+                            elif green_count == 1:
+                                category_text = "1 green 1 cautious"
+                            else:
+                                category_text = "2 cautious"
                             new_msg = (
-                                f"{sym} - {'BUY' if trade['side'] == 'buy' else 'SELL'}\n"
-                                f"Initial entry: {trade['initial_entry']}\n"
-                                f"Average entry: {trade['average_entry']}\n"
+                                f"{sym} - {trade['pattern'].upper()} {'BUY' if trade['side'] == 'buy' else 'SELL'} PATTERN\n"
+                                f"Above 21 ema - {price_ema21_emoji}\n"
+                                f"ema 9 above 21 - {ema9_ema21_emoji}\n"
+                                f"Category: {category_text}\n"
+                                f"First small candle: {trade['pressure_status']}\n"
+                                f"{trade['first_candle_analysis'].replace('\n', '\n')}\n"
+                                f"entry - {trade['average_entry']}\n"
+                                f"tp - {trade['tp']}\n"
+                                f"sl - {trade['sl']}\n"
                                 f"Total invested: ${trade['total_invested']:.2f}\n"
                                 f"{'\n'.join(dca_lines)}\n"
                                 f"DCA Added: {', '.join(dca_messages) if dca_messages else 'None'}\n"
-                                f"TP: {trade['tp']}\n"
-                                f"SL: {trade['sl']}\n"
-                                f"Exit: {hit_price}\n"
-                                f"Profit: {leveraged_pnl_pct:.2f}% (${profit:.2f})"
+                                f"Profit/Loss: {leveraged_pnl_pct:.2f}% (${profit:.2f})\n"
+                                f"{hit}"
                             )
                             trade['msg'] = new_msg
                             trade['hit'] = hit
@@ -549,10 +577,13 @@ def process_symbol(symbol, alert_queue):
             green_count = sum(1 for v in ema_status.values() if v == 'Green')
             if green_count == 2:
                 category = 'two_green'
+                category_text = "2 green"
             elif green_count == 1:
                 category = 'one_green'
+                category_text = "1 green 1 cautious"
             else:
                 category = 'two_cautions'
+                category_text = "2 cautious"
             side = 'sell'
             entry_price = second_small_candle_close
             tp = round_price(symbol, entry_price * (1 - TP_PCT))
@@ -568,15 +599,21 @@ def process_symbol(symbol, alert_queue):
                 else:
                     dca_price = round_price(symbol, entry_price * (1 + against_pct))
                     dca_lines.append(f"DCA3/SL {dca_price} (Pending)")
+            price_ema21_emoji = "✅" if ema_status['price_ema21'] == 'Green' else "⚠️"
+            ema9_ema21_emoji = "✅" if ema_status['ema9_ema21'] == 'Green' else "⚠️"
             msg = (
-                f"{symbol} - SELL\n"
-                f"Initial entry: {entry_price}\n"
-                f"Average entry: {entry_price}\n"
+                f"{symbol} - {pattern.upper()} SELL PATTERN\n"
+                f"Above 21 ema - {price_ema21_emoji}\n"
+                f"ema 9 above 21 - {ema9_ema21_emoji}\n"
+                f"Category: {category_text}\n"
+                f"First small candle: {first_candle_analysis['status']}\n"
+                f"{first_candle_analysis['text'].replace('\n', '\n')}\n"
+                f"entry - {entry_price}\n"
+                f"tp - {tp}\n"
+                f"sl - {sl}\n"
                 f"Total invested: ${CAPITAL:.2f}\n"
                 f"{'\n'.join(dca_lines)}\n"
                 f"DCA Added: None\n"
-                f"TP: {tp}\n"
-                f"SL: {sl}"
             )
             alert_queue.put((symbol, msg, ema_status, category, side, entry_price, tp, first_candle_analysis['text'], first_candle_analysis['status'], first_candle_analysis['body_pct'], pattern, dca_status, sl))
 
@@ -596,10 +633,13 @@ def process_symbol(symbol, alert_queue):
             green_count = sum(1 for v in ema_status.values() if v == 'Green')
             if green_count == 2:
                 category = 'two_green'
+                category_text = "2 green"
             elif green_count == 1:
                 category = 'one_green'
+                category_text = "1 green 1 cautious"
             else:
                 category = 'two_cautions'
+                category_text = "2 cautious"
             side = 'buy'
             entry_price = second_small_candle_close
             tp = round_price(symbol, entry_price * (1 + TP_PCT))
@@ -615,15 +655,21 @@ def process_symbol(symbol, alert_queue):
                 else:
                     dca_price = round_price(symbol, entry_price * (1 - against_pct))
                     dca_lines.append(f"DCA3/SL {dca_price} (Pending)")
+            price_ema21_emoji = "✅" if ema_status['price_ema21'] == 'Green' else "⚠️"
+            ema9_ema21_emoji = "✅" if ema_status['ema9_ema21'] == 'Green' else "⚠️"
             msg = (
-                f"{symbol} - BUY\n"
-                f"Initial entry: {entry_price}\n"
-                f"Average entry: {entry_price}\n"
+                f"{symbol} - {pattern.upper()} BUY PATTERN\n"
+                f"Above 21 ema - {price_ema21_emoji}\n"
+                f"ema 9 above 21 - {ema9_ema21_emoji}\n"
+                f"Category: {category_text}\n"
+                f"First small candle: {first_candle_analysis['status']}\n"
+                f"{first_candle_analysis['text'].replace('\n', '\n')}\n"
+                f"entry - {entry_price}\n"
+                f"tp - {tp}\n"
+                f"sl - {sl}\n"
                 f"Total invested: ${CAPITAL:.2f}\n"
                 f"{'\n'.join(dca_lines)}\n"
                 f"DCA Added: None\n"
-                f"TP: {tp}\n"
-                f"SL: {sl}"
             )
             alert_queue.put((symbol, msg, ema_status, category, side, entry_price, tp, first_candle_analysis['text'], first_candle_analysis['status'], first_candle_analysis['body_pct'], pattern, dca_status, sl))
 
