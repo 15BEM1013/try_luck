@@ -24,9 +24,10 @@ MIN_LOWER_WICK_PCT = 20.0
 MAX_WORKERS = 5
 BATCH_DELAY = 2.0
 NUM_CHUNKS = 8
-CAPITAL = 10.0
-SL_PCT = 1.5 / 100
-TP_PCT = 0.7 / 100
+CAPITAL = 20.0
+LEVERAGE = 10
+SL_PCT = 4.5 / 100
+TP_PCT = 1.0 / 100
 TP_SL_CHECK_INTERVAL = 30
 TRADE_FILE = 'open_trades.json'
 CLOSED_TRADE_FILE = 'closed_trades.json'
@@ -44,16 +45,7 @@ SUMMARY_INTERVAL = 3600
 
 # === PROXY CONFIGURATION ===
 PROXY_LIST = [
-    {'host': '23.95.150.145', 'port': '6114', 'username': 'ihpzjkrb', 'password': '4s5y5kaq34cs'},
-    {'host': '198.23.239.134', 'port': '6540', 'username': 'ihpzjkrb', 'password': '4s5y5kaq34cs'},
-    {'host': '45.38.107.97', 'port': '6014', 'username': 'ihpzjkrb', 'password': '4s5y5kaq34cs'},
-    {'host': '107.172.163.27', 'port': '6543', 'username': 'ihpzjkrb', 'password': '4s5y5kaq34cs'},
-    {'host': '64.137.96.74', 'port': '6641', 'username': 'ihpzjkrb', 'password': '4s5y5kaq34cs'},
-    {'host': '45.43.186.39', 'port': '6257', 'username': 'ihpzjkrb', 'password': '4s5y5kaq34cs'},
-    {'host': '154.203.43.247', 'port': '5536', 'username': 'ihpzjkrb', 'password': '4s5y5kaq34cs'},
-    {'host': '216.10.27.159', 'port': '6837', 'username': 'ihpzjkrb', 'password': '4s5y5kaq34cs'},
-    {'host': '136.0.207.84', 'port': '6661', 'username': 'ihpzjkrb', 'password': '4s5y5kaq34cs'},
-    {'host': '142.147.128.93', 'port': '6593', 'username': 'ihpzjkrb', 'password': '4s5y5kaq34cs'},
+   
 ]
 
 def get_proxy_config(proxy):
@@ -376,12 +368,13 @@ def check_tp_sl():
                                 pnl = (hit_price - trade['entry']) / trade['entry'] * 100
                             else:
                                 pnl = (trade['entry'] - hit_price) / trade['entry'] * 100
-                            logging.info(f"TP/SL hit for {sym}: {hit}, PnL: {pnl:.2f}%")
-                            profit = CAPITAL * pnl / 100
+                            leveraged_pnl_pct = pnl * LEVERAGE
+                            profit = CAPITAL * leveraged_pnl_pct / 100
+                            logging.info(f"TP/SL hit for {sym}: {hit}, Leveraged PnL: {leveraged_pnl_pct:.2f}%")
                             closed_trade = {
                                 'symbol': sym,
                                 'pnl': profit,
-                                'pnl_pct': pnl,
+                                'pnl_pct': leveraged_pnl_pct,
                                 'category': trade['category'],
                                 'ema_status': trade['ema_status'],
                                 'pressure_status': trade['pressure_status'],
@@ -399,7 +392,7 @@ def check_tp_sl():
                                 f"entry - {trade['entry']}\n"
                                 f"tp - {trade['tp']}\n"
                                 f"sl - {trade['sl']}\n"
-                                f"Profit/Loss: {pnl:.2f}% (${profit:.2f})\n{hit}"
+                                f"Profit/Loss: {leveraged_pnl_pct:.2f}% (${profit:.2f})\n{hit}"
                             )
                             trade['msg'] = new_msg
                             trade['hit'] = hit
@@ -446,81 +439,180 @@ def process_symbol(symbol, alert_queue):
             first_candle_analysis = analyze_first_small_candle(candles[-3], 'rising')
             if first_candle_analysis['body_pct'] > BODY_SIZE_THRESHOLD:
                 return
+
             if sent_signals.get((symbol, 'rising')) == signal_time:
                 return
             sent_signals[(symbol, 'rising')] = signal_time
-            price_above_ema21 = first_small_candle_close > ema21
-            ema9_above_ema21 = ema9 > ema21
+
+            price_above = first_small_candle_close > ema21
+            ema9_above = ema9 > ema21
+            pressure = first_candle_analysis['status']
+
+            # Blocked case
+            if price_above and ema9_above and pressure == 'neutral':
+                return
+
+            direction = None
+
+            # SELL cases
+            if not price_above and not ema9_above:
+                direction = 'sell'
+
+            elif price_above and ema9_above and pressure == 'buying_pressure':
+                direction = 'sell'
+
+            elif price_above and not ema9_above and pressure == 'neutral':
+                direction = 'sell'
+
+            # BUY cases (reverse)
+            elif price_above and ema9_above and pressure == 'selling_pressure':
+                direction = 'buy'
+
+            elif price_above and not ema9_above and pressure in ['buying_pressure', 'selling_pressure']:
+                direction = 'buy'
+
+            if direction is None:
+                return
+
+            green_count = sum(1 for v in [price_above, ema9_above] if v)
+            category = 'two_green' if green_count == 2 else 'one_green' if green_count == 1 else 'two_cautions'
+
             ema_status = {
-                'price_ema21': '✅' if price_above_ema21 else '⚠️',
-                'ema9_ema21': '✅' if ema9_above_ema21 else '⚠️'
+                'price_ema21': '✅' if price_above else '⚠️',
+                'ema9_ema21': '✅' if ema9_above else '⚠️'
             }
-            green_count = sum(1 for v in ema_status.values() if v == '✅')
-            if green_count == 2:
-                category = 'two_green'
-            elif green_count == 1:
-                category = 'one_green'
+
+            if direction == 'sell':
+                side = 'sell'
+                entry_price = second_small_candle_close
+                tp = round_price(symbol, first_small_candle_close * (1 - TP_PCT))
+                sl = round_price(symbol, entry_price * (1 + SL_PCT))
+                tp_distance = (entry_price - tp) / entry_price * 100
+                pattern_label = 'RISING → SELL'
             else:
-                category = 'two_cautions'
-            side = 'sell'
-            entry_price = second_small_candle_close
-            tp = round_price(symbol, first_small_candle_close * (1 - TP_PCT))
-            sl = round_price(symbol, entry_price * (1 + SL_PCT))
-            tp_distance = (entry_price - tp) / entry_price * 100
-            pattern = 'rising'
+                side = 'buy'
+                entry_price = second_small_candle_close
+                tp = round_price(symbol, first_small_candle_close * (1 + TP_PCT))
+                sl = round_price(symbol, entry_price * (1 - SL_PCT))
+                tp_distance = (tp - entry_price) / entry_price * 100
+                pattern_label = 'RISING → BUY'
+
             msg = (
-                f"{symbol} - {'REVERSED SELL' if side == 'sell' else 'RISING'} PATTERN\n"
-                f"Above 21 ema - {ema_status['price_ema21']}\n"
-                f"ema 9 above 21 - {ema_status['ema9_ema21']}\n"
-                f"RSI: {rsi:.2f}\n"
+                f"📊 {symbol}\n"
+                f"**{side.upper()} RIGHT NOW**  ← DO THIS\n"
+                f"Pattern: {pattern_label}\n"
+                f"Price vs 21 EMA: {'Above' if price_above else 'Below'} {ema_status['price_ema21']}\n"
+                f"EMA9 vs 21: {'Above' if ema9_above else 'Below'} {ema_status['ema9_ema21']}\n"
+                f"RSI: {rsi:.1f}\n"
                 f"First small candle: {first_candle_analysis['text']}\n"
-                f"entry - {entry_price}\n"
-                f"tp - {tp}\n"
-                f"TP Distance: {tp_distance:.2f}%\n"
-                f"sl - {sl}\n"
+                f"──────────────────────\n"
+                f"Entry: {entry_price}\n"
+                f"TP:    {tp}   (+1% → +10% with 10x)\n"
+                f"SL:    {sl}   (-4.5% → -45% with 10x)\n"
+                f"──────────────────────\n"
+                f"Capital: $20 | Leverage: 10x | Max risk ~$9\n"
                 f"Trade going on..."
             )
-            alert_queue.put((symbol, msg, ema_status, category, side, entry_price, tp, sl, first_candle_analysis['text'], first_candle_analysis['status'], first_candle_analysis['body_pct'], pattern))
+
+            alert_queue.put((
+                symbol, msg, ema_status, category, side,
+                entry_price, tp, sl,
+                first_candle_analysis['text'],
+                first_candle_analysis['status'],
+                first_candle_analysis['body_pct'],
+                'rising'
+            ))
 
         elif detect_falling_three(candles):
             first_candle_analysis = analyze_first_small_candle(candles[-3], 'falling')
             if first_candle_analysis['body_pct'] > BODY_SIZE_THRESHOLD:
                 return
+
             if sent_signals.get((symbol, 'falling')) == signal_time:
                 return
             sent_signals[(symbol, 'falling')] = signal_time
-            price_below_ema21 = first_small_candle_close < ema21
-            ema9_below_ema21 = ema9 < ema21
+
+            price_above = first_small_candle_close > ema21
+            ema9_above = ema9 > ema21
+            pressure = first_candle_analysis['status']
+
+            # Blocked case
+            if not price_above and not ema9_above and pressure == 'neutral':
+                return
+
+            direction = None
+
+            # BUY cases
+            if price_above and ema9_above and pressure in ['selling_pressure', 'neutral']:
+                direction = 'buy'
+
+            elif not price_above and ema9_above and pressure == 'neutral':
+                direction = 'buy'
+
+            elif not price_above and not ema9_above and pressure == 'buying_pressure':
+                direction = 'buy'
+
+            # SELL cases (reverse)
+            elif price_above and ema9_above and pressure == 'buying_pressure':
+                direction = 'sell'
+
+            elif not price_above and ema9_above and pressure == 'selling_pressure':
+                direction = 'sell'
+
+            elif not price_above and not ema9_above and pressure == 'selling_pressure':
+                direction = 'sell'
+
+            if direction is None:
+                return
+
+            green_count = sum(1 for v in [price_above, ema9_above] if v)
+            category = 'two_green' if green_count == 2 else 'one_green' if green_count == 1 else 'two_cautions'
+
             ema_status = {
-                'price_ema21': '✅' if price_below_ema21 else '⚠️',
-                'ema9_ema21': '✅' if ema9_below_ema21 else '⚠️'
+                'price_ema21': '✅' if price_above else '⚠️',
+                'ema9_ema21': '✅' if ema9_above else '⚠️'
             }
-            green_count = sum(1 for v in ema_status.values() if v == '✅')
-            if green_count == 2:
-                category = 'two_green'
-            elif green_count == 1:
-                category = 'one_green'
+
+            if direction == 'buy':
+                side = 'buy'
+                entry_price = second_small_candle_close
+                tp = round_price(symbol, first_small_candle_close * (1 + TP_PCT))
+                sl = round_price(symbol, entry_price * (1 - SL_PCT))
+                tp_distance = (tp - entry_price) / entry_price * 100
+                pattern_label = 'FALLING → BUY'
             else:
-                category = 'two_cautions'
-            side = 'buy'
-            entry_price = second_small_candle_close
-            tp = round_price(symbol, first_small_candle_close * (1 + TP_PCT))
-            sl = round_price(symbol, entry_price * (1 - SL_PCT))
-            tp_distance = (tp - entry_price) / entry_price * 100
-            pattern = 'falling'
+                side = 'sell'
+                entry_price = second_small_candle_close
+                tp = round_price(symbol, first_small_candle_close * (1 - TP_PCT))
+                sl = round_price(symbol, entry_price * (1 + SL_PCT))
+                tp_distance = (entry_price - tp) / entry_price * 100
+                pattern_label = 'FALLING → SELL'
+
             msg = (
-                f"{symbol} - {'REVERSED BUY' if side == 'buy' else 'FALLING'} PATTERN\n"
-                f"Below 21 ema - {ema_status['price_ema21']}\n"
-                f"ema 9 below 21 - {ema_status['ema9_ema21']}\n"
-                f"RSI: {rsi:.2f}\n"
+                f"📊 {symbol}\n"
+                f"**{side.upper()} RIGHT NOW**  ← DO THIS\n"
+                f"Pattern: {pattern_label}\n"
+                f"Price vs 21 EMA: {'Above' if price_above else 'Below'} {ema_status['price_ema21']}\n"
+                f"EMA9 vs 21: {'Above' if ema9_above else 'Below'} {ema_status['ema9_ema21']}\n"
+                f"RSI: {rsi:.1f}\n"
                 f"First small candle: {first_candle_analysis['text']}\n"
-                f"entry - {entry_price}\n"
-                f"tp - {tp}\n"
-                f"TP Distance: {tp_distance:.2f}%\n"
-                f"sl - {sl}\n"
+                f"──────────────────────\n"
+                f"Entry: {entry_price}\n"
+                f"TP:    {tp}   (+1% → +10% with 10x)\n"
+                f"SL:    {sl}   (-4.5% → -45% with 10x)\n"
+                f"──────────────────────\n"
+                f"Capital: $20 | Leverage: 10x | Max risk ~$9\n"
                 f"Trade going on..."
             )
-            alert_queue.put((symbol, msg, ema_status, category, side, entry_price, tp, sl, first_candle_analysis['text'], first_candle_analysis['status'], first_candle_analysis['body_pct'], pattern))
+
+            alert_queue.put((
+                symbol, msg, ema_status, category, side,
+                entry_price, tp, sl,
+                first_candle_analysis['text'],
+                first_candle_analysis['status'],
+                first_candle_analysis['body_pct'],
+                'falling'
+            ))
 
     except ccxt.RateLimitExceeded:
         time.sleep(5)
